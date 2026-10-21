@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Trabajo Práctico: Prototipo con Articulation Body - Brazo Robótico Manipulador</title>
+<style>
+  @page {
+    size: A4;
+    margin: 16mm 15mm 16mm 15mm;
+  }
+  * {
+    box-sizing: border-box;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: #1e293b;
+    background-color: #ffffff;
+    line-height: 1.5;
+    font-size: 10.5pt;
+    margin: 0;
+    padding: 0;
+  }
+  .header-box {
+    background: linear-gradient(135deg, #1e3a8a 0%, #0284c7 100%);
+    color: #ffffff;
+    padding: 24px;
+    border-radius: 8px;
+    margin-bottom: 22px;
+  }
+  .header-box h1 {
+    margin: 0 0 6px 0;
+    font-size: 20pt;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+  }
+  .header-box .sub {
+    font-size: 11pt;
+    opacity: 0.92;
+    margin-bottom: 12px;
+  }
+  .header-meta {
+    display: flex;
+    gap: 20px;
+    font-size: 9pt;
+    border-top: 1px solid rgba(255, 255, 255, 0.25);
+    padding-top: 10px;
+    margin-top: 8px;
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 8.5pt;
+    font-weight: 600;
+  }
+  .badge-success { background-color: #dcfce7; color: #166534; }
+  .badge-info { background-color: #e0f2fe; color: #075985; }
+  .badge-warning { background-color: #fef3c7; color: #92400e; }
+
+  h2 {
+    color: #0f172a;
+    font-size: 13.5pt;
+    border-bottom: 2px solid #0284c7;
+    padding-bottom: 5px;
+    margin-top: 24px;
+    margin-bottom: 12px;
+  }
+  h3 {
+    color: #1e3a8a;
+    font-size: 11.5pt;
+    margin-top: 16px;
+    margin-bottom: 6px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0 18px 0;
+    font-size: 9pt;
+  }
+  th, td {
+    border: 1px solid #cbd5e1;
+    padding: 7px 9px;
+    text-align: left;
+  }
+  th {
+    background-color: #f1f5f9;
+    color: #0f172a;
+    font-weight: 600;
+  }
+  tr:nth-child(even) td {
+    background-color: #f8fafc;
+  }
+
+  .script-card {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-left: 4px solid #0284c7;
+    padding: 12px 14px;
+    margin-bottom: 14px;
+    border-radius: 4px;
+    page-break-inside: avoid;
+  }
+  .script-title {
+    font-weight: 700;
+    font-size: 10.5pt;
+    color: #0f172a;
+    margin-bottom: 4px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .script-desc {
+    font-size: 9.5pt;
+    color: #334155;
+    margin-bottom: 6px;
+  }
+  .script-bullets {
+    margin: 4px 0;
+    padding-left: 18px;
+    font-size: 9pt;
+    color: #475569;
+  }
+  .script-bullets li {
+    margin-bottom: 3px;
+  }
+
+  .tree-container {
+    background-color: #0f172a;
+    color: #e2e8f0;
+    font-family: "Courier New", Courier, monospace;
+    font-size: 9pt;
+    padding: 14px 18px;
+    border-radius: 6px;
+    margin: 12px 0;
+    line-height: 1.45;
+  }
+  .tree-keyword { color: #38bdf8; font-weight: bold; }
+  .tree-joint { color: #4ade80; }
+  .tree-type { color: #facc15; }
+
+  .callout {
+    background-color: #eff6ff;
+    border-left: 4px solid #3b82f6;
+    padding: 10px 14px;
+    border-radius: 4px;
+    margin: 12px 0;
+    font-size: 9.2pt;
+    color: #1e40af;
+  }
+
+  .step-box {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 10px;
+    page-break-inside: avoid;
+  }
+  .step-num {
+    background-color: #0284c7;
+    color: #ffffff;
+    font-weight: bold;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 9pt;
+  }
+  .step-content {
+    font-size: 9.3pt;
+  }
+
+  .page-break {
+    page-break-before: always;
+  }
+</style>
+</head>
+<body>
+
+  <!-- ENCABEZADO -->
+  <div class="header-box">
+    <h1>Documentación Técnica: Brazo Robótico Articulado</h1>
+    <div class="sub">Simulador Físico con Articulation Body · Licenciatura en Desarrollo de Videojuegos y Simulaciones</div>
+    <div class="header-meta">
+      <div><strong>Motor:</strong> Unity 2022.3 / 6.3 LTS</div>
+      <div><strong>Física:</strong> Reduced-Coordinate ArticulationBody (Featherstone)</div>
+      <div><strong>Plataforma:</strong> WebGL / Standalone</div>
+      <div><strong>Entrega:</strong> Código C#, Jerarquía y Diagramas</div>
+    </div>
+  </div>
+
+  <!-- SECCIÓN 1: RESUMEN Y CONSIGNAS -->
+  <h2>1. Cumplimiento de la Consigna y Requisitos Mínimos</h2>
+  <p>
+    El proyecto reproduce un <strong>brazo manipulador industrial robótico con garra clasificadora</strong>. El operador controla la rotación de la base, la elevación de la pluma y la flexión del antebrazo mediante una interfaz gráfica de sliders, accionando una pinza prismática para tomar cubos con física de fricción real, trasladarlos y depositarlos en una plataforma de descarga objetivo.
+  </p>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 28%;">Aspecto / Criterio</th>
+        <th style="width: 24%;">Mínimo del TP</th>
+        <th style="width: 32%;">Implementado en este Proyecto</th>
+        <th style="width: 16%;">Estado</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Articulaciones</strong></td>
+        <td>Al menos 1 con raíz bien definida</td>
+        <td>1 Raíz Immovable (<code>Base</code> fija al mundo)</td>
+        <td><span class="badge badge-success">Cumplido</span></td>
+      </tr>
+      <tr>
+        <td><strong>Cuerpos Articulados</strong></td>
+        <td>Entre 6 y 10 Articulation Bodies</td>
+        <td><strong>8 Articulation Bodies</strong> en serie y bifurcación</td>
+        <td><span class="badge badge-success">Cumplido (8)</span></td>
+      </tr>
+      <tr>
+        <td><strong>Tipos de Joint</strong></td>
+        <td>Al menos 3 distintos</td>
+        <td><strong>4 Tipos Distintos:</strong><br>Fixed, Revolute, Prismatic, Spherical</td>
+        <td><span class="badge badge-success">Cumplido (4)</span></td>
+      </tr>
+      <tr>
+        <td><strong>Joints con Drive Controlado</strong></td>
+        <td>Al menos 4</td>
+        <td><strong>4 Drives Activos:</strong><br>1. Base Yaw (Revolute)<br>2. Brazo Pitch (Revolute)<br>3. Antebrazo Pitch (Revolute)<br>4. Pinzas Garra (Prismatic)</td>
+        <td><span class="badge badge-success">Cumplido</span></td>
+      </tr>
+      <tr>
+        <td><strong>Joints Pasivos</strong></td>
+        <td>Al menos 1 parte que se mueva por gravedad o contacto</td>
+        <td><strong>Péndulo / Plomada Esférico:</strong><br><code>SphericalJoint</code> sin rigidez (stiffness = 0) que oscila libremente por inercia y gravedad.</td>
+        <td><span class="badge badge-success">Cumplido</span></td>
+      </tr>
+      <tr>
+        <td><strong>Entrada del Usuario</strong></td>
+        <td>4 sliders y 2 botones (UI)</td>
+        <td>4 Sliders lineales para articulaciones + 3 Botones (Alternar Garra, Reset Brazo, Reset Cubos).</td>
+        <td><span class="badge badge-success">Cumplido</span></td>
+      </tr>
+      <tr>
+        <td><strong>Lectura de Estado</strong></td>
+        <td>Target y valor real por joint en pantalla</td>
+        <td>Panel UI de Telemetría en vivo con Target, Posición Real y Error de seguimiento por cada joint.</td>
+        <td><span class="badge badge-success">Cumplido</span></td>
+      </tr>
+      <tr>
+        <td><strong>Interacción con Rigidbodies</strong></td>
+        <td>Una tarea que involucre Rigidbodies comunes</td>
+        <td>3 Cubos con Rigidbody y material de alta fricción para maniobra de traslado y apilado con feedback de meta.</td>
+        <td><span class="badge badge-success">Cumplido</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- SECCIÓN 2: DIAGRAMA DEL ÁRBOL -->
+  <h2>2. Diagrama del Árbol de Articulación (Jerarquía y Tipos)</h2>
+  <p>
+    La cadena cinemática se modela como un árbol de cuerpos rígidos conectados con coordenadas reducidas, garantizando estabilidad numérica sin sufrir elongación de juntas:
+  </p>
+
+  <div class="tree-container">
+PISO (Static Collider)
+│
+└── <span class="tree-keyword">base</span> [ArticulationBody · <span class="tree-type">Root Immovable</span> · Masa: 20 kg]
+    │
+    └── <span class="tree-keyword">sobre base</span> (Torreta) [<span class="tree-joint">RevoluteJoint</span> · Eje: Y (Yaw) · [-150°, 150°] · Masa: 8 kg]
+        │
+        └── <span class="tree-keyword">Brazo</span> (Pluma) [<span class="tree-joint">RevoluteJoint</span> · Eje: X (Pitch) · [-60°, 60°] · Masa: 6 kg]
+            │
+            └── <span class="tree-keyword">Antebrazo</span> (Codo) [<span class="tree-joint">RevoluteJoint</span> · Eje: X (Pitch) · [-90°, 90°] · Masa: 4 kg]
+                │
+                └── <span class="tree-keyword">SoporteGarra</span> (Palma) [<span class="tree-joint">FixedJoint</span> · Soldadura rígida · Masa: 1.5 kg]
+                    ├── <span class="tree-keyword">DedoIzquierdo</span> [<span class="tree-joint">PrismaticJoint</span> · Eje: Z · [0, 0.06m] · Masa: 0.5 kg]
+                    ├── <span class="tree-keyword">DedoDerecho</span> [<span class="tree-joint">PrismaticJoint</span> · Eje: Z · [-0.06m, 0] · Masa: 0.5 kg]
+                    └── <span class="tree-keyword">PenduloPasivo</span> [<span class="tree-joint">SphericalJoint</span> · Pasivo (Stiffness 0) · Masa: 0.3 kg]
+  </div>
+
+  <div class="page-break"></div>
+
+  <!-- SECCIÓN 3: ESPECIFICACIONES FÍSICAS DE LOS DRIVES -->
+  <h2>3. Especificación Técnica de Cuerpos y Selección de Drives</h2>
+  <p>
+    En <code>ArticulationBody</code>, cada motor se rige por un resorte crítico amortiguado tipo PD (Proporcional-Derivativo) a través de los parámetros <strong>Stiffness</strong> (rigidez proporcional), <strong>Damping</strong> (amortiguación derivativa) y <strong>ForceLimit</strong> (fuerza o torque máximo disponible).
+  </p>
+  <div class="callout">
+    <strong>Criterio de Selección de Valores (De la raíz a la punta):</strong><br>
+    Los eslabones proximales (Base y Brazo) deben soportar el momento de inercia y peso de toda la estructura móvil, por lo que requieren mayor rigidez (12.000 a 15.000) y torque (15.000 a 20.000 N·m). A medida que nos acercamos a la garra, las masas se reducen, por lo que se emplean stiffness y damping más bajos (4.000 y 400) para evitar sobre-oscilaciones o inestabilidades numéricas en la simulación WebGL.
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Cuerpo</th>
+        <th>Tipo Joint</th>
+        <th>Eje / Rango</th>
+        <th>Masa</th>
+        <th>Stiffness</th>
+        <th>Damping</th>
+        <th>Force Limit</th>
+        <th>Rol en la Máquina</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Base</strong></td>
+        <td>Root (Fijo)</td>
+        <td>Inamovible</td>
+        <td>20.0 kg</td>
+        <td>—</td>
+        <td>—</td>
+        <td>—</td>
+        <td>Anclaje estático al terreno de trabajo.</td>
+      </tr>
+      <tr>
+        <td><strong>SobreBase</strong></td>
+        <td>Revolute</td>
+        <td>Eje Y: [-150°, 150°]</td>
+        <td>8.0 kg</td>
+        <td>12.000</td>
+        <td>1.200</td>
+        <td>15.000 N·m</td>
+        <td>Giro horizontal (Yaw) para orientar el manipulador.</td>
+      </tr>
+      <tr>
+        <td><strong>Brazo</strong></td>
+        <td>Revolute</td>
+        <td>Eje X: [-60°, 60°]</td>
+        <td>6.0 kg</td>
+        <td>15.000</td>
+        <td>1.500</td>
+        <td>20.000 N·m</td>
+        <td>Elevación principal (Hombro / Pluma de carga).</td>
+      </tr>
+      <tr>
+        <td><strong>Antebrazo</strong></td>
+        <td>Revolute</td>
+        <td>Eje X: [-90°, 90°]</td>
+        <td>4.0 kg</td>
+        <td>10.000</td>
+        <td>1.000</td>
+        <td>12.000 N·m</td>
+        <td>Articulación de codo para aproximación y alcance.</td>
+      </tr>
+      <tr>
+        <td><strong>SoporteGarra</strong></td>
+        <td>Fixed</td>
+        <td>Sin grados de libertad</td>
+        <td>1.5 kg</td>
+        <td>—</td>
+        <td>—</td>
+        <td>—</td>
+        <td>Estructura de la muñeca para sujetar dedos y sensor.</td>
+      </tr>
+      <tr>
+        <td><strong>Dedo Izq.</strong></td>
+        <td>Prismatic</td>
+        <td>Eje Z: [0, 0.06 m]</td>
+        <td>0.5 kg</td>
+        <td>4.000</td>
+        <td>400</td>
+        <td>5.000 N</td>
+        <td>Pinza izquierda de apriete lineal sincronizado.</td>
+      </tr>
+      <tr>
+        <td><strong>Dedo Der.</strong></td>
+        <td>Prismatic</td>
+        <td>Eje Z: [-0.06, 0 m]</td>
+        <td>0.5 kg</td>
+        <td>4.000</td>
+        <td>400</td>
+        <td>5.000 N</td>
+        <td>Pinza derecha en espejo para cierre balanceado.</td>
+      </tr>
+      <tr>
+        <td><strong>Péndulo</strong></td>
+        <td>Spherical</td>
+        <td>Rotación 3D libre</td>
+        <td>0.3 kg</td>
+        <td><strong>0</strong> (Sin motor)</td>
+        <td>0.05</td>
+        <td>0</td>
+        <td><strong>Elemento pasivo:</strong> oscila con aceleración/gravedad.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- SECCIÓN 4: EXPLICACIÓN DE SCRIPTS -->
+  <h2>4. Arquitectura de Software y Explicación de Scripts</h2>
+  <p>
+    El código fuente está diseñado siguiendo una arquitectura desacoplada, modular y orientada a eventos, ubicada en la carpeta <code>Assets/Scrips</code>:
+  </p>
+
+  <div class="script-card">
+    <div class="script-title">
+      <span>1. RobotJointController.cs</span>
+      <span class="badge badge-info">Control Físico & Telemetría Individual</span>
+    </div>
+    <div class="script-desc">
+      Componente que se acopla a cada <code>ArticulationBody</code> motorizado. Gestiona la configuración del drive físico, el suavizado de la señal de entrada y la telemetría en tiempo real.
+    </div>
+    <ul class="script-bullets">
+      <li><strong>Ejecución en FixedUpdate():</strong> Asigna el <code>drive.target</code> en el ciclo de paso de física, aplicando una interpolación suave (<code>Mathf.MoveTowards</code>) para que los movimientos de sliders del usuario no generen saltos de aceleración infinita que puedan corromper el integrador de Featherstone.</li>
+      <li><strong>Conversión de Unidades:</strong> Transforma automáticamente los radianes que devuelve <code>jointPosition[0]</code> a grados sexagesimales para articulaciones <code>RevoluteJoint</code>, o metros para <code>PrismaticJoint</code>.</li>
+      <li><strong>Cálculo de Error:</strong> Calcula <code>TrackingError = |Target - CurrentPosition|</code> en cada instante para alimentar la telemetría exigida en la consigna.</li>
+    </ul>
+  </div>
+
+  <div class="script-card">
+    <div class="script-title">
+      <span>2. RobotArmManager.cs</span>
+      <span class="badge badge-info">Coordinador Central del Robot</span>
+    </div>
+    <div class="script-desc">
+      Orquesta el conjunto de las articulaciones del brazo, coordina la apertura simétrica de la garra y administra las posturas predeterminadas (Home / Reset).
+    </div>
+    <ul class="script-bullets">
+      <li><strong>Control de la Garra (Gripper):</strong> Recibe un valor normalizado [0, 1] y calcula el desplazamiento inverso de ambos dedos prismáticos de forma coordinada (<code>+offset</code> y <code>-offset</code>).</li>
+      <li><strong>Alternar Garra (Toggle):</strong> Permite abrir o cerrar con un único comando o clic de botón.</li>
+      <li><strong>Restablecimiento (Home):</strong> Regresa las articulaciones a ángulos estables de reposo seguros evitando colisiones con el piso.</li>
+      <li><strong>Monitoreo del Joint Pasivo:</strong> Mide el ángulo de deflexión del péndulo esférico respecto al vector de gravedad terrestre (<code>Vector3.up</code>).</li>
+    </ul>
+  </div>
+
+  <div class="page-break"></div>
+
+  <div class="script-card">
+    <div class="script-title">
+      <span>3. RobotUIController.cs</span>
+      <span class="badge badge-info">Interfaz de Usuario & Visualización Telemetría</span>
+    </div>
+    <div class="script-desc">
+      Conecta los elementos visuales del Canvas (sliders y botones) con el robot y dibuja en pantalla el panel de telemetría en vivo requerido por el TP.
+    </div>
+    <ul class="script-bullets">
+      <li><strong>Vinculación de Sliders:</strong> Configura dinámicamente los rangos mínimo y máximo de cada slider según los límites reales de cada joint.</li>
+      <li><strong>Prevención de Bucles de Eventos:</strong> Dispone del flag <code>isUpdatingSlidersFromCode</code> para evitar que al resetear el brazo se disparen retroalimentaciones recursivas en los eventos de los sliders.</li>
+      <li><strong>Telemetría en Pantalla:</strong> Imprime por frame una tabla formateada con columnas: <em>Articulación | Target | Real | Error</em>, además de la inclinación del elemento pasivo y el estado de la garra. Compatible con <code>Text</code> estándar y <code>TextMeshProUGUI</code>.</li>
+    </ul>
+  </div>
+
+  <div class="script-card">
+    <div class="script-title">
+      <span>4. CubeManager.cs & TaskTargetZone.cs</span>
+      <span class="badge badge-info">Gestión de Cargas & Detección de Maniobra</span>
+    </div>
+    <div class="script-desc">
+      Controlan los objetos interactuables (Rigidbodies) y verifican la compleción de la tarea de manipulación y transporte.
+    </div>
+    <ul class="script-bullets">
+      <li><strong>Material Físico de Alta Fricción:</strong> Genera en tiempo de ejecución un <code>PhysicMaterial</code> con fricción estática 1.0, fricción dinámica 0.9 y modo de combinación <code>Maximum</code>. Esto es crucial en Unity para que las pinzas no resbalen al elevar el cubo en WebGL.</li>
+      <li><strong>Sistema de Respawn:</strong> Detecta si algún cubo cae de la plataforma (<code>position.y &lt; -2</code>) o si el usuario presiona el botón de reinicio, devolviéndolo con velocidad cero a su posición inicial.</li>
+      <li><strong>Zona de Descarga (TargetZone):</strong> Trigger ubicado en la plataforma verde de destino que contabiliza los cubos depositados satisfactoriamente y actualiza el mensaje de misión cumplida.</li>
+    </ul>
+  </div>
+
+  <div class="script-card">
+    <div class="script-title">
+      <span>5. RobotArmSceneBuilder.cs (Editor Script)</span>
+      <span class="badge badge-warning">Herramienta de Automatización en Editor</span>
+    </div>
+    <div class="script-desc">
+      Script de menú en Unity (<code>Simulador &gt; Construir y Configurar Escena Completa</code>) que construye automáticamente todo el escenario respetando los materiales y objetos previos del alumno.
+    </div>
+    <ul class="script-bullets">
+      <li>Identifica los objetos <code>piso</code>, <code>base</code> y <code>sobre base</code> ya presentes en la escena y aplica los materiales <code>Color piso</code> y <code>Color base garra</code> existentes en <code>Assets/Prefabs</code>.</li>
+      <li>Instancia los Articulation Bodies con sus anclas y pivotes matemáticamente calculados para que las rotaciones se produzcan exactamente en las uniones de las piezas.</li>
+      <li>Genera el Canvas UI completo con sus paneles, 4 sliders, 3 botones y textos, ya conectados con sus referencias.</li>
+    </ul>
+  </div>
+
+  <!-- SECCIÓN 5: GUÍA DE OPERACIÓN -->
+  <h2>5. Guía de Operación y Realización de la Maniobra</h2>
+  <div class="step-box">
+    <div class="step-num">1</div>
+    <div class="step-content"><strong>Construcción / Verificación:</strong> En Unity, abrir el menú superior <code>Simulador &gt; Construir y Configurar Escena Completa</code>. Se ensamblarán automáticamente las 8 articulaciones, la UI y los cubos.</div>
+  </div>
+  <div class="step-box">
+    <div class="step-num">2</div>
+    <div class="step-content"><strong>Iniciar Simulación:</strong> Presionar <em>Play</em> en el editor de Unity. El brazo se colocará suavemente en su postura inicial y la telemetría comenzará a transmitir en vivo.</div>
+  </div>
+  <div class="step-box">
+    <div class="step-num">3</div>
+    <div class="step-content"><strong>Aproximación a la Carga:</strong> Mover el <em>Slider 1 (Base)</em> para rotar la torreta hacia los cubos de colores. Usar el <em>Slider 2 (Brazo)</em> y <em>Slider 3 (Antebrazo)</em> para descender la garra sobre un cubo.</div>
+  </div>
+  <div class="step-box">
+    <div class="step-num">4</div>
+    <div class="step-content"><strong>Sujeción:</strong> Presionar el botón <em>"Alternar Garra"</em> o arrastrar el <em>Slider 4</em> a 0. Las pinzas prismáticas aprisionarán el cubo firmemente.</div>
+  </div>
+  <div class="step-box">
+    <div class="step-num">5</div>
+    <div class="step-content"><strong>Elevación y Traslado:</strong> Elevar el brazo (Slider 2), girar la base 180° hacia la plataforma verde de descarga y descender la carga sobre la meta.</div>
+  </div>
+  <div class="step-box">
+    <div class="step-num">6</div>
+    <div class="step-content"><strong>Liberación y Verificación:</strong> Abrir la garra. La zona de descarga detectará el cubo y la UI marcará el progreso de la maniobra exitosa.</div>
+  </div>
+
+  <!-- SECCIÓN 6: RECOMENDACIONES WEBGL -->
+  <h2>6. Recomendaciones para la Build WebGL y la Entrega</h2>
+  <ul style="font-size: 9.3pt; color: #334155;">
+    <li><strong>Paso Físico Constante:</strong> Asegurarse en <em>Project Settings &gt; Time</em> de que <code>Fixed Timestep</code> esté fijado en <code>0.02</code> (50 Hz) o <code>0.0166</code> (60 Hz) para garantizar que los cálculos de ArticulationBody sean idénticos en WebGL a los del editor.</li>
+    <li><strong>Limpieza de Repositorio:</strong> Al realizar el <code>git add</code> y <code>commit</code>, verificar que las carpetas <code>Library</code>, <code>Temp</code>, <code>Logs</code> y <code>Build</code> estén excluidas en el archivo <code>.gitignore</code>.</li>
+    <li><strong>Publicación en itch.io:</strong> Exportar en formato WebGL, comprimir el contenido de la carpeta de build en un archivo <code>.zip</code> y marcar la casilla <em>"This file will be played in the browser"</em> en itch.io.</li>
+  </ul>
+
+</body>
+</html>
