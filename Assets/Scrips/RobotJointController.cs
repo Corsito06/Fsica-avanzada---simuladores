@@ -6,6 +6,7 @@ using UnityEngine;
 /// el suavizado del objetivo (para evitar tirones en WebGL/Física)
 /// y la lectura en tiempo real de posición, objetivo y error de seguimiento.
 /// </summary>
+[SelectionBase]
 [RequireComponent(typeof(ArticulationBody))]
 public class RobotJointController : MonoBehaviour
 {
@@ -36,8 +37,11 @@ public class RobotJointController : MonoBehaviour
     [Tooltip("Velocidad de aproximación al target (grados/s o m/s).")]
     [SerializeField] private float smoothSpeed = 120f;
 
+    [Header("Objetivo Actual (Editable en Inspector o por Slider)")]
+    [Tooltip("Objetivo actual del motor (grados para Revolute, metros para Prismatic).")]
+    [SerializeField] private float targetValue = 0f;
+
     private ArticulationBody articulationBody;
-    private float targetValue = 0f;
     private float currentSmoothedTarget = 0f;
 
     // Propiedades públicas para telemetría y UI
@@ -62,12 +66,10 @@ public class RobotJointController : MonoBehaviour
 
             if (articulationBody.jointType == ArticulationJointType.RevoluteJoint)
             {
-                // En ArticulationBody, jointPosition se mide en radianes para joints rotacionales
                 return articulationBody.jointPosition[0] * Mathf.Rad2Deg;
             }
             else if (articulationBody.jointType == ArticulationJointType.PrismaticJoint)
             {
-                // Para joints prismáticos, se mide en metros
                 return articulationBody.jointPosition[0];
             }
             return 0f;
@@ -86,15 +88,45 @@ public class RobotJointController : MonoBehaviour
     }
 
     /// <summary>
+    /// Ajusta los límites inferior y superior del joint.
+    /// </summary>
+    public void ConfigureLimits(float min, float max)
+    {
+        lowerLimit = min;
+        upperLimit = max;
+    }
+
+    /// <summary>
     /// Configura y aplica los parámetros del ArticulationDrive a la articulación.
     /// </summary>
     public void ConfigureDrive()
     {
+        if (articulationBody == null) articulationBody = GetComponent<ArticulationBody>();
         if (articulationBody == null) return;
 
-        // Si es Fixed o Spherical pasivo, no configuramos drive motorizado
         if (articulationBody.jointType == ArticulationJointType.FixedJoint)
             return;
+
+        if (articulationBody.jointType == ArticulationJointType.RevoluteJoint)
+        {
+            articulationBody.twistLock = ArticulationDofLock.LimitedMotion;
+        }
+        else if (articulationBody.jointType == ArticulationJointType.PrismaticJoint)
+        {
+            articulationBody.linearLockX = ArticulationDofLock.LimitedMotion;
+            articulationBody.linearLockY = ArticulationDofLock.LockedMotion;
+            articulationBody.linearLockZ = ArticulationDofLock.LockedMotion;
+
+            // Sincronizar el ancla con la posición actual del dedo y asegurar eje horizontal Z (sin componente vertical)
+            Quaternion horizontalZ = Quaternion.Euler(0f, -90f, 0f);
+            articulationBody.anchorPosition = Vector3.zero;
+            articulationBody.anchorRotation = horizontalZ;
+            articulationBody.parentAnchorPosition = transform.localPosition;
+            articulationBody.parentAnchorRotation = horizontalZ;
+            articulationBody.matchAnchors = true;
+        }
+
+        targetValue = Mathf.Clamp(targetValue, lowerLimit, upperLimit);
 
         ArticulationDrive drive = articulationBody.xDrive;
         drive.lowerLimit = lowerLimit;
@@ -110,7 +142,6 @@ public class RobotJointController : MonoBehaviour
 
     /// <summary>
     /// Establece un nuevo objetivo (Target) para la articulación.
-    /// Clampeado automáticamente entre los límites definidos.
     /// </summary>
     public void SetTarget(float newTarget)
     {
@@ -142,7 +173,8 @@ public class RobotJointController : MonoBehaviour
         if (articulationBody == null || articulationBody.jointType == ArticulationJointType.FixedJoint)
             return;
 
-        // Suavizado en FixedUpdate para mantener sincronía física
+        targetValue = Mathf.Clamp(targetValue, lowerLimit, upperLimit);
+
         if (useSmoothing)
         {
             currentSmoothedTarget = Mathf.MoveTowards(currentSmoothedTarget, targetValue, smoothSpeed * Time.fixedDeltaTime);
@@ -152,7 +184,6 @@ public class RobotJointController : MonoBehaviour
             currentSmoothedTarget = targetValue;
         }
 
-        // Aplicamos el target al Drive de ArticulationBody
         ArticulationDrive drive = articulationBody.xDrive;
         drive.target = currentSmoothedTarget;
         articulationBody.xDrive = drive;

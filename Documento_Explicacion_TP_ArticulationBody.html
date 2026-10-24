@@ -468,8 +468,8 @@ PISO (Static Collider)
       Script de menú en Unity (<code>Simulador &gt; Construir y Configurar Escena Completa</code>) que construye automáticamente todo el escenario respetando los materiales y objetos previos del alumno.
     </div>
     <ul class="script-bullets">
-      <li>Identifica los objetos <code>piso</code>, <code>base</code> y <code>sobre base</code> ya presentes en la escena y aplica los materiales <code>Color piso</code> y <code>Color base garra</code> existentes en <code>Assets/Prefabs</code>.</li>
-      <li>Instancia los Articulation Bodies con sus anclas y pivotes matemáticamente calculados para que las rotaciones se produzcan exactamente en las uniones de las piezas.</li>
+      <li><strong>Separación Eslabón / Visual (Escala 1,1,1):</strong> Cada objeto con <code>ArticulationBody</code> mantiene escala <code>(1, 1, 1)</code> como recomienda la consigna, mientras que la malla visual y el collider viven en un hijo <code>_Visual</code>, evitando deformaciones por escalado no uniforme.</li>
+      <li><strong>Péndulo con Soga (<code>PassivePendulum.cs</code>):</strong> Construye un soporte lateral con una soga cilíndrica y una esfera en la punta unidas mediante un <code>SphericalJoint</code> pasivo (<code>stiffness = 0</code>, <code>jointFriction = 0</code>), ignorando colisiones internas con el brazo para que oscile libremente por gravedad e inercia.</li>
       <li>Genera el Canvas UI completo con sus paneles, 4 sliders, 3 botones y textos, ya conectados con sus referencias.</li>
     </ul>
   </div>

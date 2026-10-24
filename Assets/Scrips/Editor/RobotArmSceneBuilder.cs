@@ -1,622 +1,666 @@
 #if UNITY_EDITOR
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 /// <summary>
-/// Herramienta de Editor para construir y configurar automáticamente la escena del simulador.
-/// Crea o completa la jerarquía del brazo articulado cumpliendo todos los requisitos de la consigna:
-/// - 8 Articulation Bodies (Base fija, Torreta Revolute, Brazo Revolute, Antebrazo Revolute, Soporte Fixed, Dedos Prismatic, Péndulo Spherical pasivo).
-/// - Asignación de materiales (Color base garra, Color piso).
-/// - Parámetros de Drive (stiffness, damping, forceLimit) equilibrados y estables.
-/// - Interfaz de Usuario completa (4 Sliders, 3 Botones, Panel de Telemetría).
-/// - 3 Cubos con Rigidbody y plataforma de descarga para la maniobra.
+/// Herramienta de Editor que repara automáticamente el brazo del usuario ("Base") en la escena:
+/// - Alinea DedoIzquierdo y DedoDerecho a la misma altura y corrige el eje prismático horizontal (Z).
+/// - Construye el Péndulo Pasivo completo con su soporte, soga (cilindro) y esfera, con SphericalJoint sin fricción.
+/// - Normaliza las escalas de los eslabones (1,1,1) pasando la malla a hijos "_Visual" para evitar deformaciones al rotar.
+/// - Crea los cubos interactuables, la zona de descarga y el Canvas de UI conectado al RobotArmManager.
 /// </summary>
+[InitializeOnLoad]
 public static class RobotArmSceneBuilder
 {
-    private const string MAT_GARRA_PATH = "Assets/Prefabs/Color base garra.mat";
-    private const string MAT_PISO_PATH = "Assets/Prefabs/Color piso.mat";
+    private const string CUBES_ROOT = "CubosInteractuables";
+    private const string ZONE_NAME = "ZonaDescarga";
+    private const string CANVAS_NAME = "SimuladorCanvas";
+    private const string ASSET_DIR = "Assets/Prefabs";
 
-    [MenuItem("Simulador/Construir y Configurar Escena Completa")]
-    public static void BuildCompleteScene()
+    private const float FINGER_STROKE = 0.085f;
+
+    static RobotArmSceneBuilder()
     {
-        Undo.IncrementCurrentGroup();
-        Undo.SetCurrentGroupName("Construir Simulador ArticulationBody");
-        int groupIndex = Undo.GetCurrentGroup();
+        EditorApplication.delayCall += AutoRepairIfNeeded;
+        EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
+    }
 
-        // 1. Cargar materiales existentes
-        Material matGarra = AssetDatabase.LoadAssetAtPath<Material>(MAT_GARRA_PATH);
-        Material matPiso = AssetDatabase.LoadAssetAtPath<Material>(MAT_PISO_PATH);
-
-        if (matGarra == null)
+    private static void OnPlayModeStateChanged(PlayModeStateChange state)
+    {
+        if (state == PlayModeStateChange.EnteredEditMode)
         {
-            matGarra = new Material(Shader.Find("Standard")) { color = new Color(0.2f, 0.4f, 0.8f) };
+            EditorApplication.delayCall += AutoRepairIfNeeded;
         }
-        if (matPiso == null)
+    }
+
+    private static void AutoRepairIfNeeded()
+    {
+        if (EditorApplication.isPlayingOrWillChangePlaymode)
+            return;
+
+        GameObject baseObj = GameObject.Find("Base");
+        if (baseObj == null)
+            return;
+
+        // Verificar si hace falta reparar (ej: aún tiene escala deformada en SoporteGarra o falta la Soga del péndulo o falta el Canvas)
+        Transform soporteGarra = FindDeepChild(baseObj.transform, "SoporteGarra");
+        Transform pendulo = FindDeepChild(baseObj.transform, "PenduloPasivo");
+        bool needsArmRepair = false;
+
+        if (soporteGarra != null && Vector3.Distance(soporteGarra.localScale, Vector3.one) > 0.01f)
+            needsArmRepair = true;
+
+        if (pendulo == null || pendulo.Find("Soga") == null || pendulo.GetComponent<ArticulationBody>() == null)
+            needsArmRepair = true;
+
+        Transform dedoIzq = FindDeepChild(baseObj.transform, "DedoIzquierdo");
+        Transform dedoDer = FindDeepChild(baseObj.transform, "DedoDerecho");
+        if (dedoIzq != null && dedoDer != null && Mathf.Abs(dedoIzq.localPosition.y - dedoDer.localPosition.y) > 0.001f)
+            needsArmRepair = true;
+
+        bool needsEnvironment = GameObject.Find(CANVAS_NAME) == null || GameObject.Find(CUBES_ROOT) == null || GameObject.Find(ZONE_NAME) == null;
+
+        if (needsArmRepair || needsEnvironment)
         {
-            matPiso = new Material(Shader.Find("Standard")) { color = new Color(0.3f, 0.3f, 0.3f) };
+            RepairUserScene();
+        }
+    }
+
+    [MenuItem("Simulador/Reparar mi brazo actual (Garra + Péndulo + UI)")]
+    public static void RepairUserScene()
+    {
+        if (EditorApplication.isPlaying)
+        {
+            Debug.LogWarning("[Simulador] Salí de Play Mode para aplicar la reparación permanente en la escena.");
+            return;
         }
 
-        // Material físico de alta fricción para agarre firme
-        PhysicMaterial highFrictionMat = new PhysicMaterial("FriccionRobusta")
-        {
-            staticFriction = 1.0f,
-            dynamicFriction = 0.9f,
-            frictionCombine = PhysicMaterialCombine.Maximum,
-            bounciness = 0f,
-            bounceCombine = PhysicMaterialCombine.Minimum
-        };
+        RobotArmManager manager = RepairOrBuildArm();
+        if (manager == null) return;
 
-        // 2. Configurar o Buscar Piso
-        GameObject piso = GameObject.Find("piso");
-        if (piso == null) piso = GameObject.Find("Piso");
-        if (piso == null)
+        CubeManager cubes;
+        TaskTargetZone zone;
+        BuildCubesAndZone(manager.transform.position, out cubes, out zone);
+        BuildUI(manager, cubes, zone);
+
+        AssetDatabase.SaveAssets();
+        EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+        EditorSceneManager.SaveOpenScenes();
+        Debug.Log("<color=green><b>[Simulador]</b> ¡Brazo reparado! Dedo izquierdo alineado, péndulo con soga creado y controles listos. Dale a Play.</color>");
+    }
+
+    [MenuItem("Simulador/Construir TODO (brazo + cubos + interfaz)")]
+    public static void BuildAll()
+    {
+        RepairUserScene();
+    }
+
+    public static RobotArmManager RepairOrBuildArm()
+    {
+        if (!AssetDatabase.IsValidFolder(ASSET_DIR))
         {
-            piso = GameObject.CreatePrimitive(PrimitiveType.Plane);
-            piso.name = "piso";
-            piso.transform.position = Vector3.zero;
-            piso.transform.localScale = new Vector3(2f, 1f, 2f);
-            Undo.RegisterCreatedObjectUndo(piso, "Crear Piso");
+            AssetDatabase.CreateFolder("Assets", "Prefabs");
         }
-        piso.GetComponent<MeshRenderer>().sharedMaterial = matPiso;
-        var pisoCol = piso.GetComponent<Collider>();
-        if (pisoCol != null) pisoCol.sharedMaterial = highFrictionMat;
 
-        // 3. Configurar Base Raíz (Immovable)
-        GameObject baseObj = GameObject.Find("base");
-        if (baseObj == null) baseObj = GameObject.Find("Base");
+        Material matBase = LoadOrCreateMaterial("Color base garra", new Color(0.15f, 0.6f, 0.15f));
+        Material matArm = LoadOrCreateMaterial("Color brazo", new Color(0.9f, 0.9f, 0.92f));
+        Material matDark = LoadOrCreateMaterial("Color soga", new Color(0.15f, 0.15f, 0.15f));
+        Material matBall = LoadOrCreateMaterial("Color pendulo", new Color(0.85f, 0.18f, 0.18f));
+        PhysicMaterial grip = LoadOrCreatePhysicMaterial();
+
+        float floorY = FindFloorY();
+
+        GameObject baseObj = GameObject.Find("Base");
         if (baseObj == null)
         {
-            baseObj = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            baseObj.name = "base";
-            baseObj.transform.position = new Vector3(0f, 0.25f, 0f);
-            baseObj.transform.localScale = new Vector3(1.2f, 0.5f, 1.2f);
-            Undo.RegisterCreatedObjectUndo(baseObj, "Crear Base");
+            baseObj = new GameObject("Base");
+            baseObj.transform.position = new Vector3(-0.12f, floorY, -2.52f);
         }
-        else
-        {
-            baseObj.transform.position = new Vector3(0f, 0.25f, 0f);
-            baseObj.transform.localScale = new Vector3(1.2f, 0.5f, 1.2f);
-        }
-        baseObj.GetComponent<MeshRenderer>().sharedMaterial = matGarra;
 
-        var baseAb = GetOrAddComponent<ArticulationBody>(baseObj);
+        Vector3 baseWorldPos = new Vector3(baseObj.transform.position.x, floorY, baseObj.transform.position.z);
+
+        // Obtener o crear cada objeto manteniendo los nombres exactos de la jerarquía del usuario
+        GameObject sobrebase = FindOrCreateChild(baseObj.transform, "Sobrebase");
+        GameObject brazo = FindOrCreateChild(sobrebase.transform, "Brazo");
+        GameObject antebrazo = FindOrCreateChild(brazo.transform, "Antebrazo");
+        GameObject soporteGarra = FindOrCreateChild(antebrazo.transform, "SoporteGarra");
+        GameObject dedoIzq = FindOrCreateChild(soporteGarra.transform, "DedoIzquierdo");
+        GameObject dedoDer = FindOrCreateChild(soporteGarra.transform, "DedoDerecho");
+        GameObject pendulo = FindOrCreateChild(soporteGarra.transform, "PenduloPasivo");
+
+        // 1) BASE (Raíz inmóvil, escala 1,1,1)
+        StripDirectMeshIfHasChildren(baseObj);
+        baseObj.transform.position = baseWorldPos;
+        baseObj.transform.rotation = Quaternion.identity;
+        baseObj.transform.localScale = Vector3.one;
+        EnsureChildVisual(baseObj.transform, "Base_Visual", PrimitiveType.Cube,
+            new Vector3(0f, 0.155f, 0f), new Vector3(1.0f, 0.31f, 1.0f), matBase, null, true);
+
+        ArticulationBody baseAb = GetOrAdd<ArticulationBody>(baseObj);
         baseAb.immovable = true;
-        baseAb.mass = 20f;
-        baseAb.linearDamping = 0.05f;
-        baseAb.angularDamping = 0.05f;
+        baseAb.mass = 50f;
+        baseAb.solverIterations = 30;
+        baseAb.solverVelocityIterations = 12;
 
-        var armManager = GetOrAddComponent<RobotArmManager>(baseObj);
+        RobotArmManager manager = GetOrAdd<RobotArmManager>(baseObj);
 
-        // 4. Configurar SobreBase / Torreta (Revolute Joint - Eje Y)
-        GameObject sobreBase = GameObject.Find("sobre base");
-        if (sobreBase == null) sobreBase = GameObject.Find("SobreBase") ?? GameObject.Find("sobrebase");
-        if (sobreBase == null)
+        // 2) SOBREBASE (Revolute - Giro horizontal Yaw alrededor de Y)
+        StripDirectMeshIfHasChildren(sobrebase);
+        ResetLinkTransform(sobrebase.transform, new Vector3(0f, 0.31f, 0f));
+        EnsureChildVisual(sobrebase.transform, "Sobrebase_Visual", PrimitiveType.Cube,
+            new Vector3(0f, 0.15f, 0f), new Vector3(0.5f, 0.30f, 0.5f), matBase, null, true);
+
+        ConfigureLinkJoint(sobrebase, ArticulationJointType.RevoluteJoint, Quaternion.Euler(0f, 0f, 90f), 4f);
+        RobotJointController baseCtrl = ConfigureController(sobrebase, "Base (Yaw)", 15000f, 1500f, 25000f, -170f, 170f, 80f);
+
+        // 3) BRAZO (Revolute - Inclinación Pitch alrededor de X)
+        StripDirectMeshIfHasChildren(brazo);
+        ResetLinkTransform(brazo.transform, new Vector3(0f, 0.30f, 0f));
+        EnsureChildVisual(brazo.transform, "Brazo_Visual", PrimitiveType.Cube,
+            new Vector3(0f, 0.30f, 0f), new Vector3(0.14f, 0.60f, 0.14f), matArm, null, true);
+
+        ConfigureLinkJoint(brazo, ArticulationJointType.RevoluteJoint, Quaternion.identity, 4f);
+        RobotJointController shoulderCtrl = ConfigureController(brazo, "Brazo (Pitch)", 45000f, 4500f, 60000f, -90f, 90f, 60f);
+
+        // 4) ANTEBRAZO (Revolute - Flexión Pitch alrededor de X)
+        StripDirectMeshIfHasChildren(antebrazo);
+        ResetLinkTransform(antebrazo.transform, new Vector3(0f, 0.60f, 0f));
+        EnsureChildVisual(antebrazo.transform, "Antebrazo_Visual", PrimitiveType.Cube,
+            new Vector3(0f, 0.42f, 0f), new Vector3(0.12f, 0.84f, 0.12f), matArm, null, true);
+
+        ConfigureLinkJoint(antebrazo, ArticulationJointType.RevoluteJoint, Quaternion.identity, 3f);
+        RobotJointController elbowCtrl = ConfigureController(antebrazo, "Antebrazo (Pitch)", 35000f, 3500f, 45000f, -120f, 120f, 70f);
+
+        // 5) SOPORTE GARRA (Fixed - Palma soldada al extremo del antebrazo, escala 1,1,1)
+        StripDirectMeshIfHasChildren(soporteGarra);
+        ResetLinkTransform(soporteGarra.transform, new Vector3(0f, 0.84f, 0f));
+        EnsureChildVisual(soporteGarra.transform, "SoporteGarra_Visual", PrimitiveType.Cube,
+            new Vector3(0f, 0.0125f, 0f), new Vector3(0.15f, 0.025f, 0.26f), matArm, grip, true);
+        ConfigureLinkJoint(soporteGarra, ArticulationJointType.FixedJoint, Quaternion.identity, 1f);
+
+        // 6) DEDO IZQUIERDO Y DEDO DERECHO (Prismatic sobre eje horizontal Z, a la MISMA altura exacta)
+        RobotJointController leftCtrl = ConfigureFingerDirect(
+            dedoIzq, "Dedo Izq (Prismatic)",
+            new Vector3(0f, 0.085f, -0.115f),
+            new Vector3(0.15f, 0.17f, 0.025f),
+            0f, FINGER_STROKE, matArm, grip);
+
+        RobotJointController rightCtrl = ConfigureFingerDirect(
+            dedoDer, "Dedo Der (Prismatic)",
+            new Vector3(0f, 0.085f, +0.115f),
+            new Vector3(0.15f, 0.17f, 0.025f),
+            -FINGER_STROKE, 0f, matArm, grip);
+
+        // 7) PÉNDULO PASIVO (Soporte lateral + Soga cilíndrica + Esfera en la punta, SphericalJoint libre)
+        EnsureChildVisual(soporteGarra.transform, "Soporte_Pendulo", PrimitiveType.Cube,
+            new Vector3(0.16f, 0.0125f, 0f), new Vector3(0.22f, 0.02f, 0.02f), matDark, null, false);
+
+        StripDirectMeshIfHasChildren(pendulo);
+        ResetLinkTransform(pendulo.transform, new Vector3(0.25f, 0.0125f, 0f));
+
+        // Soga (cilindro desde el pivote (0,0,0) hasta (0,-0.28,0))
+        EnsureChildVisual(pendulo.transform, "Soga", PrimitiveType.Cylinder,
+            new Vector3(0f, -0.14f, 0f), new Vector3(0.015f, 0.14f, 0.015f), matDark, null, false);
+
+        // Esfera (bola en el extremo inferior de la soga)
+        EnsureChildVisual(pendulo.transform, "Esfera", PrimitiveType.Sphere,
+            new Vector3(0f, -0.31f, 0f), new Vector3(0.11f, 0.11f, 0.11f), matBall, grip, true);
+
+        ArticulationBody pendAb = ConfigureLinkJoint(pendulo, ArticulationJointType.SphericalJoint, Quaternion.identity, 0.35f);
+        pendAb.swingYLock = ArticulationDofLock.FreeMotion;
+        pendAb.swingZLock = ArticulationDofLock.FreeMotion;
+        pendAb.twistLock = ArticulationDofLock.FreeMotion;
+        pendAb.linearDamping = 0.05f;
+        pendAb.angularDamping = 0.4f;
+        pendAb.jointFriction = 0f;
+        pendAb.useGravity = true;
+
+        ArticulationDrive zeroDrive = new ArticulationDrive
         {
-            sobreBase = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-            sobreBase.name = "sobre base";
-            Undo.RegisterCreatedObjectUndo(sobreBase, "Crear SobreBase");
-        }
-        sobreBase.transform.parent = baseObj.transform;
-        sobreBase.transform.localPosition = new Vector3(0f, 0.5f, 0f);
-        sobreBase.transform.localRotation = Quaternion.identity;
-        sobreBase.transform.localScale = new Vector3(0.8f, 0.3f, 0.8f);
-        sobreBase.GetComponent<MeshRenderer>().sharedMaterial = matGarra;
-
-        var turretAb = GetOrAddComponent<ArticulationBody>(sobreBase);
-        turretAb.jointType = ArticulationJointType.RevoluteJoint;
-        turretAb.anchorRotation = Quaternion.Euler(0f, 90f, 0f); // Eje Y para giro horizontal
-        turretAb.parentAnchorRotation = Quaternion.identity;
-        turretAb.mass = 8f;
-        var turretCtrl = GetOrAddComponent<RobotJointController>(sobreBase);
-        SetPrivateField(turretCtrl, "jointName", "Base (Yaw)");
-        SetPrivateField(turretCtrl, "stiffness", 12000f);
-        SetPrivateField(turretCtrl, "damping", 1200f);
-        SetPrivateField(turretCtrl, "forceLimit", 15000f);
-        SetPrivateField(turretCtrl, "lowerLimit", -150f);
-        SetPrivateField(turretCtrl, "upperLimit", 150f);
-        SetPrivateField(turretCtrl, "smoothSpeed", 90f);
-        turretCtrl.ConfigureDrive();
-
-        // 5. Configurar Brazo / Pluma (Revolute Joint - Eje X)
-        Transform brazoT = sobreBase.transform.Find("Brazo");
-        GameObject brazo = brazoT != null ? brazoT.gameObject : null;
-        if (brazo == null)
-        {
-            brazo = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            brazo.name = "Brazo";
-            brazo.transform.parent = sobreBase.transform;
-            Undo.RegisterCreatedObjectUndo(brazo, "Crear Brazo");
-        }
-        brazo.transform.localPosition = new Vector3(0f, 0.7f, 0f);
-        brazo.transform.localRotation = Quaternion.identity;
-        brazo.transform.localScale = new Vector3(0.25f, 1.2f, 0.25f);
-        brazo.GetComponent<MeshRenderer>().sharedMaterial = matGarra;
-
-        var brazoAb = GetOrAddComponent<ArticulationBody>(brazo);
-        brazoAb.jointType = ArticulationJointType.RevoluteJoint;
-        brazoAb.anchorRotation = Quaternion.identity; // Eje X por defecto en ArticulationBody
-        brazoAb.parentAnchorRotation = Quaternion.identity;
-        brazoAb.anchorPosition = new Vector3(0f, -0.6f, 0f); // Pivote en la base del brazo
-        brazoAb.parentAnchorPosition = new Vector3(0f, 0.15f, 0f);
-        brazoAb.mass = 6f;
-        var brazoCtrl = GetOrAddComponent<RobotJointController>(brazo);
-        SetPrivateField(brazoCtrl, "jointName", "Brazo (Pitch)");
-        SetPrivateField(brazoCtrl, "stiffness", 15000f);
-        SetPrivateField(brazoCtrl, "damping", 1500f);
-        SetPrivateField(brazoCtrl, "forceLimit", 20000f);
-        SetPrivateField(brazoCtrl, "lowerLimit", -60f);
-        SetPrivateField(brazoCtrl, "upperLimit", 60f);
-        SetPrivateField(brazoCtrl, "smoothSpeed", 60f);
-        brazoCtrl.ConfigureDrive();
-
-        // 6. Configurar Antebrazo / Codo (Revolute Joint - Eje X)
-        Transform antebrazoT = brazo.transform.Find("Antebrazo");
-        GameObject antebrazo = antebrazoT != null ? antebrazoT.gameObject : null;
-        if (antebrazo == null)
-        {
-            antebrazo = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            antebrazo.name = "Antebrazo";
-            antebrazo.transform.parent = brazo.transform;
-            Undo.RegisterCreatedObjectUndo(antebrazo, "Crear Antebrazo");
-        }
-        antebrazo.transform.localPosition = new Vector3(0f, 1.1f, 0f);
-        antebrazo.transform.localRotation = Quaternion.identity;
-        antebrazo.transform.localScale = new Vector3(0.2f, 1.0f, 0.2f);
-        antebrazo.GetComponent<MeshRenderer>().sharedMaterial = matGarra;
-
-        var antebrazoAb = GetOrAddComponent<ArticulationBody>(antebrazo);
-        antebrazoAb.jointType = ArticulationJointType.RevoluteJoint;
-        antebrazoAb.anchorRotation = Quaternion.identity;
-        antebrazoAb.anchorPosition = new Vector3(0f, -0.5f, 0f); // Pivote en el codo
-        antebrazoAb.parentAnchorPosition = new Vector3(0f, 0.6f, 0f);
-        antebrazoAb.mass = 4f;
-        var antebrazoCtrl = GetOrAddComponent<RobotJointController>(antebrazo);
-        SetPrivateField(antebrazoCtrl, "jointName", "Antebrazo");
-        SetPrivateField(antebrazoCtrl, "stiffness", 10000f);
-        SetPrivateField(antebrazoCtrl, "damping", 1000f);
-        SetPrivateField(antebrazoCtrl, "forceLimit", 12000f);
-        SetPrivateField(antebrazoCtrl, "lowerLimit", -90f);
-        SetPrivateField(antebrazoCtrl, "upperLimit", 90f);
-        SetPrivateField(antebrazoCtrl, "smoothSpeed", 75f);
-        antebrazoCtrl.ConfigureDrive();
-
-        // 7. Configurar Muñeca / Soporte Garra (Fixed Joint)
-        Transform soporteGarraT = antebrazo.transform.Find("SoporteGarra");
-        GameObject soporteGarra = soporteGarraT != null ? soporteGarraT.gameObject : null;
-        if (soporteGarra == null)
-        {
-            soporteGarra = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            soporteGarra.name = "SoporteGarra";
-            soporteGarra.transform.parent = antebrazo.transform;
-            Undo.RegisterCreatedObjectUndo(soporteGarra, "Crear Soporte Garra");
-        }
-        soporteGarra.transform.localPosition = new Vector3(0f, 0.55f, 0f);
-        soporteGarra.transform.localRotation = Quaternion.identity;
-        soporteGarra.transform.localScale = new Vector3(0.25f, 0.1f, 0.35f);
-        soporteGarra.GetComponent<MeshRenderer>().sharedMaterial = matGarra;
-
-        var soporteAb = GetOrAddComponent<ArticulationBody>(soporteGarra);
-        soporteAb.jointType = ArticulationJointType.FixedJoint;
-        soporteAb.mass = 1.5f;
-
-        // 8. Dedo Izquierdo (Prismatic Joint - Desplazamiento Z)
-        Transform dedoIzqT = soporteGarra.transform.Find("DedoIzquierdo");
-        GameObject dedoIzq = dedoIzqT != null ? dedoIzqT.gameObject : null;
-        if (dedoIzq == null)
-        {
-            dedoIzq = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            dedoIzq.name = "DedoIzquierdo";
-            dedoIzq.transform.parent = soporteGarra.transform;
-            Undo.RegisterCreatedObjectUndo(dedoIzq, "Crear Dedo Izquierdo");
-        }
-        dedoIzq.transform.localPosition = new Vector3(0f, 0.15f, 0.1f);
-        dedoIzq.transform.localRotation = Quaternion.identity;
-        dedoIzq.transform.localScale = new Vector3(0.08f, 0.25f, 0.05f);
-        dedoIzq.GetComponent<MeshRenderer>().sharedMaterial = matGarra;
-        var colIzq = dedoIzq.GetComponent<Collider>();
-        if (colIzq != null) colIzq.sharedMaterial = highFrictionMat;
-
-        var dedoIzqAb = GetOrAddComponent<ArticulationBody>(dedoIzq);
-        dedoIzqAb.jointType = ArticulationJointType.PrismaticJoint;
-        dedoIzqAb.anchorRotation = Quaternion.Euler(0f, 90f, 0f); // Dirección Z local
-        dedoIzqAb.mass = 0.5f;
-        var dedoIzqCtrl = GetOrAddComponent<RobotJointController>(dedoIzq);
-        SetPrivateField(dedoIzqCtrl, "jointName", "Dedo Izq (Prism)");
-        SetPrivateField(dedoIzqCtrl, "stiffness", 4000f);
-        SetPrivateField(dedoIzqCtrl, "damping", 400f);
-        SetPrivateField(dedoIzqCtrl, "forceLimit", 5000f);
-        SetPrivateField(dedoIzqCtrl, "lowerLimit", 0f);
-        SetPrivateField(dedoIzqCtrl, "upperLimit", 0.06f);
-        SetPrivateField(dedoIzqCtrl, "smoothSpeed", 0.2f);
-        dedoIzqCtrl.ConfigureDrive();
-
-        // 9. Dedo Derecho (Prismatic Joint - Desplazamiento -Z)
-        Transform dedoDerT = soporteGarra.transform.Find("DedoDerecho");
-        GameObject dedoDer = dedoDerT != null ? dedoDerT.gameObject : null;
-        if (dedoDer == null)
-        {
-            dedoDer = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            dedoDer.name = "DedoDerecho";
-            dedoDer.transform.parent = soporteGarra.transform;
-            Undo.RegisterCreatedObjectUndo(dedoDer, "Crear Dedo Derecho");
-        }
-        dedoDer.transform.localPosition = new Vector3(0f, 0.15f, -0.1f);
-        dedoDer.transform.localRotation = Quaternion.identity;
-        dedoDer.transform.localScale = new Vector3(0.08f, 0.25f, 0.05f);
-        dedoDer.GetComponent<MeshRenderer>().sharedMaterial = matGarra;
-        var colDer = dedoDer.GetComponent<Collider>();
-        if (colDer != null) colDer.sharedMaterial = highFrictionMat;
-
-        var dedoDerAb = GetOrAddComponent<ArticulationBody>(dedoDer);
-        dedoDerAb.jointType = ArticulationJointType.PrismaticJoint;
-        dedoDerAb.anchorRotation = Quaternion.Euler(0f, 90f, 0f);
-        dedoDerAb.mass = 0.5f;
-        var dedoDerCtrl = GetOrAddComponent<RobotJointController>(dedoDer);
-        SetPrivateField(dedoDerCtrl, "jointName", "Dedo Der (Prism)");
-        SetPrivateField(dedoDerCtrl, "stiffness", 4000f);
-        SetPrivateField(dedoDerCtrl, "damping", 400f);
-        SetPrivateField(dedoDerCtrl, "forceLimit", 5000f);
-        SetPrivateField(dedoDerCtrl, "lowerLimit", -0.06f);
-        SetPrivateField(dedoDerCtrl, "upperLimit", 0f);
-        SetPrivateField(dedoDerCtrl, "smoothSpeed", 0.2f);
-        dedoDerCtrl.ConfigureDrive();
-
-        // 10. Joint Pasivo (Péndulo Esférico - Spherical Joint)
-        Transform penduloT = soporteGarra.transform.Find("PenduloPasivo");
-        GameObject pendulo = penduloT != null ? penduloT.gameObject : null;
-        if (pendulo == null)
-        {
-            pendulo = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            pendulo.name = "PenduloPasivo";
-            pendulo.transform.parent = soporteGarra.transform;
-            Undo.RegisterCreatedObjectUndo(pendulo, "Crear Pendulo Pasivo");
-        }
-        pendulo.transform.localPosition = new Vector3(0f, -0.15f, 0f);
-        pendulo.transform.localScale = new Vector3(0.12f, 0.12f, 0.12f);
-        pendulo.GetComponent<MeshRenderer>().sharedMaterial = matPiso;
-
-        var penduloAb = GetOrAddComponent<ArticulationBody>(pendulo);
-        penduloAb.jointType = ArticulationJointType.SphericalJoint;
-        penduloAb.mass = 0.3f;
-        penduloAb.linearDamping = 0.2f;
-        penduloAb.angularDamping = 0.2f;
-
-        // Drive sin rigidez (stiffness = 0) para que sea 100% pasivo movido por gravedad e inercia
-        ArticulationDrive passiveDrive = penduloAb.xDrive;
-        passiveDrive.stiffness = 0f;
-        passiveDrive.damping = 0.05f;
-        passiveDrive.forceLimit = 0f;
-        penduloAb.xDrive = passiveDrive;
-        penduloAb.yDrive = passiveDrive;
-        penduloAb.zDrive = passiveDrive;
-
-        // Vincular referencias en RobotArmManager
-        SetPrivateField(armManager, "baseJoint", turretCtrl);
-        SetPrivateField(armManager, "shoulderJoint", brazoCtrl);
-        SetPrivateField(armManager, "elbowJoint", antebrazoCtrl);
-        SetPrivateField(armManager, "leftFingerJoint", dedoIzqCtrl);
-        SetPrivateField(armManager, "rightFingerJoint", dedoDerCtrl);
-        SetPrivateField(armManager, "passivePendulum", penduloAb);
-        SetPrivateField(armManager, "maxGripperStroke", 0.05f);
-
-        // 11. Crear Zona de Descarga / Meta
-        GameObject targetZoneObj = GameObject.Find("ZonaDescarga");
-        if (targetZoneObj == null)
-        {
-            targetZoneObj = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            targetZoneObj.name = "ZonaDescarga";
-            targetZoneObj.transform.position = new Vector3(-1.2f, 0.02f, 0f);
-            targetZoneObj.transform.localScale = new Vector3(0.8f, 0.04f, 0.8f);
-            Undo.RegisterCreatedObjectUndo(targetZoneObj, "Crear Zona Descarga");
-        }
-        var targetRenderer = targetZoneObj.GetComponent<MeshRenderer>();
-        var matZone = new Material(Shader.Find("Standard")) { color = new Color(0.2f, 0.8f, 0.3f, 0.7f) };
-        targetRenderer.sharedMaterial = matZone;
-
-        var targetCol = targetZoneObj.GetComponent<BoxCollider>();
-        targetCol.isTrigger = true;
-        targetCol.size = new Vector3(1f, 10f, 1f); // Trigger vertical para capturar cubos
-        targetCol.center = new Vector3(0f, 5f, 0f);
-
-        var taskTargetZone = GetOrAddComponent<TaskTargetZone>(targetZoneObj);
-
-        // 12. Crear Cubos Interactuables (Rigidbodies)
-        GameObject cubesRoot = GameObject.Find("CubosInteractuables");
-        if (cubesRoot == null)
-        {
-            cubesRoot = new GameObject("CubosInteractuables");
-            Undo.RegisterCreatedObjectUndo(cubesRoot, "Crear Root Cubos");
-        }
-        var cubeManager = GetOrAddComponent<CubeManager>(cubesRoot);
-
-        Color[] cubeColors = new Color[]
-        {
-            new Color(0.9f, 0.2f, 0.2f), // Rojo
-            new Color(0.9f, 0.8f, 0.1f), // Amarillo
-            new Color(0.1f, 0.7f, 0.9f)  // Cyan
+            stiffness = 0f,
+            damping = 0f,
+            forceLimit = 0f,
+            target = 0f
         };
+        pendAb.xDrive = zeroDrive;
+        pendAb.yDrive = zeroDrive;
+        pendAb.zDrive = zeroDrive;
 
-        Vector3[] cubePositions = new Vector3[]
-        {
-            new Vector3(0.9f, 0.15f, -0.3f),
-            new Vector3(1.1f, 0.15f, 0f),
-            new Vector3(0.9f, 0.15f, 0.3f)
-        };
+        GetOrAdd<PassivePendulum>(pendulo);
+
+        // 8) Conectar referencias en RobotArmManager
+        SetRef(manager, "baseJoint", baseCtrl);
+        SetRef(manager, "shoulderJoint", shoulderCtrl);
+        SetRef(manager, "elbowJoint", elbowCtrl);
+        SetRef(manager, "leftFingerJoint", leftCtrl);
+        SetRef(manager, "rightFingerJoint", rightCtrl);
+        SetRef(manager, "passivePendulum", pendAb);
+        SetFloat(manager, "maxGripperStroke", FINGER_STROKE);
+        SetFloat(manager, "homeBaseAngle", 0f);
+        SetFloat(manager, "homeShoulderAngle", 25f);
+        SetFloat(manager, "homeElbowAngle", 35f);
+        SetFloat(manager, "homeGripperOpen", 1f);
+
+        EditorUtility.SetDirty(baseObj);
+        return manager;
+    }
+
+    private static RobotJointController ConfigureFingerDirect(
+        GameObject fingerObj, string jointLabel, Vector3 localPos, Vector3 localScale,
+        float lower, float upper, Material mat, PhysicMaterial grip)
+    {
+        // Eliminar cualquier hijo visual viejo si existiera
+        Transform oldVis = fingerObj.transform.Find(fingerObj.name + "_Visual");
+        if (oldVis != null) Object.DestroyImmediate(oldVis.gameObject);
+
+        fingerObj.transform.localPosition = localPos;
+        fingerObj.transform.localRotation = Quaternion.identity;
+        fingerObj.transform.localScale = localScale;
+
+        MeshFilter mf = GetOrAdd<MeshFilter>(fingerObj);
+        GameObject tempCube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        mf.sharedMesh = tempCube.GetComponent<MeshFilter>().sharedMesh;
+        Object.DestroyImmediate(tempCube);
+
+        MeshRenderer mr = GetOrAdd<MeshRenderer>(fingerObj);
+        mr.sharedMaterial = mat;
+
+        BoxCollider bc = GetOrAdd<BoxCollider>(fingerObj);
+        bc.size = Vector3.one;
+        bc.center = Vector3.zero;
+        bc.sharedMaterial = grip;
+
+        Quaternion horizontalZ = Quaternion.Euler(0f, -90f, 0f);
+        ArticulationBody ab = ConfigureLinkJoint(fingerObj, ArticulationJointType.PrismaticJoint, horizontalZ, 0.25f);
+        ab.linearLockX = ArticulationDofLock.LimitedMotion;
+        ab.linearLockY = ArticulationDofLock.LockedMotion;
+        ab.linearLockZ = ArticulationDofLock.LockedMotion;
+        ab.matchAnchors = true;
+
+        return ConfigureController(fingerObj, jointLabel, 5000f, 500f, 6000f, lower, upper, 0.35f);
+    }
+
+    public static void BuildCubesAndZone(Vector3 robotPos, out CubeManager cubeManager, out TaskTargetZone zone)
+    {
+        PhysicMaterial grip = LoadOrCreatePhysicMaterial();
+
+        GameObject oldZone = GameObject.Find(ZONE_NAME);
+        if (oldZone != null) Object.DestroyImmediate(oldZone);
+        GameObject oldCubes = GameObject.Find(CUBES_ROOT);
+        if (oldCubes != null) Object.DestroyImmediate(oldCubes);
+
+        // Zona de descarga a 90 grados del brazo (en +X) a distancia de alcance (1.15m)
+        Vector3 zonePos = robotPos + new Vector3(1.15f, 0f, 0f);
+        GameObject zoneObj = new GameObject(ZONE_NAME);
+        zoneObj.transform.position = zonePos;
+
+        EnsureChildVisual(zoneObj.transform, "Plataforma_Visual", PrimitiveType.Cube,
+            new Vector3(0f, 0.015f, 0f), new Vector3(0.75f, 0.03f, 0.75f),
+            LoadOrCreateMaterial("Color zona", new Color(0.2f, 0.7f, 0.9f)), grip, true);
+
+        GameObject trigger = new GameObject("Trigger");
+        trigger.transform.SetParent(zoneObj.transform, false);
+        BoxCollider bc = trigger.AddComponent<BoxCollider>();
+        bc.isTrigger = true;
+        bc.size = new Vector3(0.75f, 0.6f, 0.75f);
+        bc.center = new Vector3(0f, 0.3f, 0f);
+        zone = trigger.AddComponent<TaskTargetZone>();
+
+        // Cubos interactuables frente al brazo (+Z, a 1.12m de la base)
+        GameObject cubesRoot = new GameObject(CUBES_ROOT);
+        cubeManager = cubesRoot.AddComponent<CubeManager>();
+
+        Color[] colors = { new Color(0.9f, 0.2f, 0.2f), new Color(0.95f, 0.8f, 0.1f), new Color(0.2f, 0.4f, 0.95f) };
+        string[] colorNames = { "rojo", "amarillo", "azul" };
+        float[] xOffsets = { -0.25f, 0f, 0.25f };
+
+        var so = new SerializedObject(cubeManager);
+        SerializedProperty list = so.FindProperty("cubes");
+        list.arraySize = 3;
 
         for (int i = 0; i < 3; i++)
         {
-            string cubeName = $"Cubo_Carga_{i + 1}";
-            Transform cT = cubesRoot.transform.Find(cubeName);
-            GameObject cube = cT != null ? cT.gameObject : null;
-            if (cube == null)
-            {
-                cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
-                cube.name = cubeName;
-                cube.transform.parent = cubesRoot.transform;
-                Undo.RegisterCreatedObjectUndo(cube, "Crear Cubo");
-            }
+            GameObject cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            cube.name = "Cubo_" + (i + 1);
+            cube.transform.SetParent(cubesRoot.transform, false);
+            cube.transform.position = robotPos + new Vector3(xOffsets[i], 0.065f, 1.12f);
+            cube.transform.localScale = Vector3.one * 0.11f;
+            cube.GetComponent<MeshRenderer>().sharedMaterial = LoadOrCreateMaterial("Color cubo " + colorNames[i], colors[i]);
+            cube.GetComponent<Collider>().sharedMaterial = grip;
 
-            cube.transform.position = cubePositions[i];
-            cube.transform.localScale = new Vector3(0.18f, 0.18f, 0.18f);
-
-            var matCube = new Material(Shader.Find("Standard")) { color = cubeColors[i] };
-            cube.GetComponent<MeshRenderer>().sharedMaterial = matCube;
-
-            var col = cube.GetComponent<Collider>();
-            col.sharedMaterial = highFrictionMat;
-
-            var rb = GetOrAddComponent<Rigidbody>(cube);
-            rb.mass = 0.4f;
-            rb.drag = 0.5f;
+            Rigidbody rb = cube.AddComponent<Rigidbody>();
+            rb.mass = 0.2f;
+            rb.drag = 0.3f;
             rb.angularDrag = 0.5f;
             rb.interpolation = RigidbodyInterpolation.Interpolate;
             rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
 
-            cubeManager.RegisterCube(rb);
+            SerializedProperty item = list.GetArrayElementAtIndex(i);
+            item.FindPropertyRelative("body").objectReferenceValue = rb;
+            item.FindPropertyRelative("initialPosition").vector3Value = cube.transform.position;
+            item.FindPropertyRelative("initialRotation").quaternionValue = cube.transform.rotation;
         }
-
-        // 13. Crear Canvas UI Completo
-        CreateCanvasUI(armManager, cubeManager, taskTargetZone);
-
-        // 14. Ajustar Cámara Principal
-        Camera mainCam = Camera.main;
-        if (mainCam != null)
-        {
-            mainCam.transform.position = new Vector3(0f, 2.2f, -3.2f);
-            mainCam.transform.rotation = Quaternion.Euler(28f, 0f, 0f);
-        }
-
-        Undo.CollapseUndoOperations(groupIndex);
-        EditorUtility.SetDirty(baseObj);
-        UnityEditor.SceneManagement.EditorSceneManager.MarkSceneDirty(
-            UnityEditor.SceneManagement.EditorSceneManager.GetActiveScene()
-        );
-
-        Debug.Log("<color=green><b>[Simulador]</b> ¡Escena completa construida con éxito! Cumple todos los requisitos de ArticulationBody.</color>");
+        so.ApplyModifiedPropertiesWithoutUndo();
+        EditorUtility.SetDirty(cubeManager);
     }
 
-    private static void CreateCanvasUI(RobotArmManager armManager, CubeManager cubeManager, TaskTargetZone targetZone)
+    public static void BuildUI(RobotArmManager manager, CubeManager cubes, TaskTargetZone zone)
     {
-        // Verificar EventSystem
-        if (Object.FindObjectOfType<UnityEngine.EventSystems.EventSystem>() == null)
+        GameObject old = GameObject.Find(CANVAS_NAME);
+        if (old != null) Object.DestroyImmediate(old);
+
+        if (Object.FindObjectOfType<EventSystem>() == null)
         {
-            GameObject es = new GameObject("EventSystem");
-            es.AddComponent<UnityEngine.EventSystems.EventSystem>();
-            es.AddComponent<UnityEngine.EventSystems.StandaloneInputModule>();
-            Undo.RegisterCreatedObjectUndo(es, "Crear EventSystem");
+            new GameObject("EventSystem", typeof(EventSystem), typeof(StandaloneInputModule));
         }
 
-        GameObject canvasObj = GameObject.Find("SimuladorCanvas");
-        if (canvasObj == null)
-        {
-            canvasObj = new GameObject("SimuladorCanvas");
-            Undo.RegisterCreatedObjectUndo(canvasObj, "Crear Canvas");
-        }
-
-        Canvas canvas = GetOrAddComponent<Canvas>(canvasObj);
+        GameObject canvasObj = new GameObject(CANVAS_NAME, typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
+        Canvas canvas = canvasObj.GetComponent<Canvas>();
         canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        var scaler = GetOrAddComponent<CanvasScaler>(canvasObj);
+        CanvasScaler scaler = canvasObj.GetComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(1920, 1080);
-        GetOrAddComponent<GraphicRaycaster>(canvasObj);
+        scaler.referenceResolution = new Vector2(1920f, 1080f);
+        scaler.matchWidthOrHeight = 0.5f;
 
-        var uiController = GetOrAddComponent<RobotUIController>(canvasObj);
-        SetPrivateField(uiController, "armManager", armManager);
-        SetPrivateField(uiController, "cubeManager", cubeManager);
-        SetPrivateField(uiController, "targetZone", targetZone);
+        RobotUIController ui = canvasObj.AddComponent<RobotUIController>();
+        DefaultControls.Resources res = UIResources();
 
-        // Limpiar hijos previos para reconstrucción limpia
-        while (canvasObj.transform.childCount > 0)
+        RectTransform left = MakePanel(canvasObj.transform, "PanelControles", new Vector2(0f, 0.5f), new Vector2(0f, 0.5f),
+            new Vector2(0f, 0.5f), new Vector2(20f, 0f), 440f, new Color(0.08f, 0.1f, 0.13f, 0.88f));
+        AddLabel(left, "CONTROL DEL BRAZO", 22, FontStyle.Bold, Color.white, 32f);
+
+        Slider sBase = AddSlider(left, res, "1. Base (Giro Yaw)");
+        Slider sShoulder = AddSlider(left, res, "2. Brazo (Hombro Pitch)");
+        Slider sElbow = AddSlider(left, res, "3. Antebrazo (Codo Pitch)");
+        Slider sGripper = AddSlider(left, res, "4. Garra (0 = Cerrada, 1 = Abierta)");
+        Button bToggle = AddButton(left, res, "Abrir / Cerrar garra", new Color(0.2f, 0.55f, 0.9f));
+        Button bArm = AddButton(left, res, "Posición de Reposo (Reset)", new Color(0.85f, 0.55f, 0.15f));
+        Button bCubes = AddButton(left, res, "Reiniciar Cubos", new Color(0.8f, 0.25f, 0.25f));
+
+        RectTransform right = MakePanel(canvasObj.transform, "PanelTelemetria", new Vector2(1f, 1f), new Vector2(1f, 1f),
+            new Vector2(1f, 1f), new Vector2(-20f, -20f), 580f, new Color(0.08f, 0.1f, 0.13f, 0.88f));
+        Text telemetry = AddLabel(right, "Telemetría...", 16, FontStyle.Normal, Color.white, 0f);
+        telemetry.alignment = TextAnchor.UpperLeft;
+
+        RectTransform top = MakePanel(canvasObj.transform, "PanelTarea", new Vector2(0.5f, 1f), new Vector2(0.5f, 1f),
+            new Vector2(0.5f, 1f), new Vector2(0f, -20f), 520f, new Color(0.08f, 0.1f, 0.13f, 0.88f));
+        Text task = AddLabel(top, "Tarea", 20, FontStyle.Bold, new Color(1f, 0.9f, 0.3f), 0f);
+        task.alignment = TextAnchor.MiddleCenter;
+
+        SetRef(ui, "armManager", manager);
+        SetRef(ui, "cubeManager", cubes);
+        SetRef(ui, "targetZone", zone);
+        SetRef(ui, "sliderBase", sBase);
+        SetRef(ui, "sliderShoulder", sShoulder);
+        SetRef(ui, "sliderElbow", sElbow);
+        SetRef(ui, "sliderGripper", sGripper);
+        SetRef(ui, "btnToggleGripper", bToggle);
+        SetRef(ui, "btnResetArm", bArm);
+        SetRef(ui, "btnResetCubes", bCubes);
+        SetRef(ui, "telemetryText", telemetry);
+        SetRef(ui, "taskStatusText", task);
+    }
+
+    // ------------------------------------------------------------------ HELPERS
+
+    private static float FindFloorY()
+    {
+        GameObject piso = GameObject.Find("piso");
+        if (piso == null) piso = GameObject.Find("Piso");
+        if (piso != null)
         {
-            Object.DestroyImmediate(canvasObj.transform.GetChild(0).gameObject);
+            Collider c = piso.GetComponent<Collider>();
+            return c != null ? c.bounds.max.y : piso.transform.position.y;
         }
-
-        Font defaultFont = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf") ?? Resources.GetBuiltinResource<Font>("Arial.ttf");
-
-        // --- Panel Izquierdo: Controles (Sliders + Botones) ---
-        GameObject panelControles = CreateUIPanel(canvasObj.transform, "PanelControles",
-            new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(30f, 0f), new Vector2(380f, 620f));
-        panelControles.GetComponent<Image>().color = new Color(0.1f, 0.12f, 0.15f, 0.9f);
-
-        CreateUIText(panelControles.transform, "TituloControles", "CONTROL DE ARTICULACIONES",
-            new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -25f), new Vector2(340f, 30f), 18, FontStyle.Bold, Color.white, defaultFont);
-
-        // Sliders
-        Slider sBase = CreateLabeledSlider(panelControles.transform, "SliderBase", "1. Base (Yaw) [-150° a 150°]", -70f, defaultFont);
-        Slider sShoulder = CreateLabeledSlider(panelControles.transform, "SliderBrazo", "2. Brazo (Pitch) [-60° a 60°]", -150f, defaultFont);
-        Slider sElbow = CreateLabeledSlider(panelControles.transform, "SliderAntebrazo", "3. Antebrazo (Pitch) [-90° a 90°]", -230f, defaultFont);
-        Slider sGripper = CreateLabeledSlider(panelControles.transform, "SliderGarra", "4. Garra (Pinzas) [0 a 1]", -310f, defaultFont);
-
-        SetPrivateField(uiController, "sliderBase", sBase);
-        SetPrivateField(uiController, "sliderShoulder", sShoulder);
-        SetPrivateField(uiController, "sliderElbow", sElbow);
-        SetPrivateField(uiController, "sliderGripper", sGripper);
-
-        // Botones
-        Button btnToggle = CreateUIButton(panelControles.transform, "BtnToggleGarra", "Alternar Garra (Abrir/Cerrar)", -390f, new Color(0.2f, 0.6f, 0.9f), defaultFont);
-        Button btnResetArm = CreateUIButton(panelControles.transform, "BtnResetArm", "Restablecer Brazo (Home)", -450f, new Color(0.85f, 0.55f, 0.15f), defaultFont);
-        Button btnResetCubes = CreateUIButton(panelControles.transform, "BtnResetCubes", "Reiniciar Cubos / Tarea", -510f, new Color(0.8f, 0.25f, 0.25f), defaultFont);
-
-        SetPrivateField(uiController, "btnToggleGripper", btnToggle);
-        SetPrivateField(uiController, "btnResetArm", btnResetArm);
-        SetPrivateField(uiController, "btnResetCubes", btnResetCubes);
-
-        // --- Panel Derecho: Telemetría en Pantalla (Target vs Real) ---
-        GameObject panelTelemetria = CreateUIPanel(canvasObj.transform, "PanelTelemetria",
-            new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-20f, -20f), new Vector2(500f, 320f));
-        panelTelemetria.GetComponent<RectTransform>().pivot = new Vector2(1f, 1f);
-        panelTelemetria.GetComponent<Image>().color = new Color(0.08f, 0.1f, 0.12f, 0.92f);
-
-        Text txtTelemetria = CreateUIText(panelTelemetria.transform, "TxtTelemetria", "Cargando telemetría...",
-            new Vector2(0f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-30f, -30f), 14, FontStyle.Normal, Color.white, defaultFont);
-        txtTelemetria.alignment = TextAnchor.UpperLeft;
-        txtTelemetria.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf") ?? defaultFont;
-        SetPrivateField(uiController, "telemetryText", txtTelemetria);
-
-        // --- Panel Superior: Estado de la Tarea / Misión ---
-        GameObject panelTarea = CreateUIPanel(canvasObj.transform, "PanelTarea",
-            new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, -20f), new Vector2(480f, 80f));
-        panelTarea.GetComponent<RectTransform>().pivot = new Vector2(0.5f, 1f);
-        panelTarea.GetComponent<Image>().color = new Color(0.12f, 0.15f, 0.18f, 0.9f);
-
-        Text txtTarea = CreateUIText(panelTarea.transform, "TxtTarea", "Tarea: Trasladar cubos a la plataforma de meta",
-            new Vector2(0f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-20f, -10f), 15, FontStyle.Bold, Color.yellow, defaultFont);
-        txtTarea.alignment = TextAnchor.MiddleCenter;
-        SetPrivateField(uiController, "taskStatusText", txtTarea);
+        return 0.606f;
     }
 
-    #region Helpers para UI
-    private static GameObject CreateUIPanel(Transform parent, string name, Vector2 anchorMin, Vector2 anchorMax, Vector2 anchoredPos, Vector2 size)
+    private static Transform FindDeepChild(Transform parent, string name)
     {
-        GameObject panel = new GameObject(name);
-        panel.transform.SetParent(parent, false);
-        Image img = panel.AddComponent<Image>();
-        RectTransform rt = panel.GetComponent<RectTransform>();
-        rt.anchorMin = anchorMin;
-        rt.anchorMax = anchorMax;
-        rt.anchoredPosition = anchoredPos;
-        rt.sizeDelta = size;
-        return panel;
+        foreach (Transform child in parent)
+        {
+            if (child.name == name) return child;
+            Transform found = FindDeepChild(child, name);
+            if (found != null) return found;
+        }
+        return null;
     }
 
-    private static Text CreateUIText(Transform parent, string name, string content, Vector2 anchorMin, Vector2 anchorMax, Vector2 anchoredPos, Vector2 size, int fontSize, FontStyle style, Color color, Font font)
+    private static GameObject FindOrCreateChild(Transform parent, string name)
     {
-        GameObject textObj = new GameObject(name);
-        textObj.transform.SetParent(parent, false);
-        Text text = textObj.AddComponent<Text>();
-        text.text = content;
-        text.font = font;
-        text.fontSize = fontSize;
-        text.fontStyle = style;
-        text.color = color;
-        RectTransform rt = textObj.GetComponent<RectTransform>();
-        rt.anchorMin = anchorMin;
-        rt.anchorMax = anchorMax;
-        rt.anchoredPosition = anchoredPos;
-        rt.sizeDelta = size;
-        return text;
+        Transform t = parent.Find(name);
+        if (t == null)
+        {
+            t = FindDeepChild(parent.root, name);
+            if (t != null) t.SetParent(parent, false);
+        }
+        if (t != null) return t.gameObject;
+
+        GameObject go = new GameObject(name);
+        go.transform.SetParent(parent, false);
+        return go;
     }
 
-    private static Slider CreateLabeledSlider(Transform parent, string name, string labelText, float posY, Font font)
+    private static void StripDirectMeshIfHasChildren(GameObject go)
     {
-        CreateUIText(parent, name + "_Label", labelText,
-            new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(20f, posY), new Vector2(-40f, 20f), 13, FontStyle.Bold, new Color(0.9f, 0.9f, 0.9f), font);
-
-        GameObject sliderObj = new GameObject(name);
-        sliderObj.transform.SetParent(parent, false);
-        Slider slider = sliderObj.AddComponent<Slider>();
-
-        RectTransform rt = sliderObj.GetComponent<RectTransform>();
-        rt.anchorMin = new Vector2(0f, 1f);
-        rt.anchorMax = new Vector2(1f, 1f);
-        rt.anchoredPosition = new Vector2(0f, posY - 25f);
-        rt.sizeDelta = new Vector2(-40f, 20f);
-
-        // Fondo
-        GameObject bg = new GameObject("Background");
-        bg.transform.SetParent(sliderObj.transform, false);
-        Image bgImg = bg.AddComponent<Image>();
-        bgImg.color = new Color(0.2f, 0.2f, 0.25f);
-        RectTransform bgRt = bg.GetComponent<RectTransform>();
-        bgRt.anchorMin = Vector2.zero;
-        bgRt.anchorMax = Vector2.one;
-        bgRt.sizeDelta = Vector2.zero;
-
-        // Fill Area
-        GameObject fillArea = new GameObject("Fill Area");
-        fillArea.transform.SetParent(sliderObj.transform, false);
-        RectTransform fillAreaRt = fillArea.AddComponent<RectTransform>();
-        fillAreaRt.anchorMin = new Vector2(0f, 0.25f);
-        fillAreaRt.anchorMax = new Vector2(1f, 0.75f);
-        fillAreaRt.sizeDelta = new Vector2(-20f, 0f);
-
-        GameObject fill = new GameObject("Fill");
-        fill.transform.SetParent(fillArea.transform, false);
-        Image fillImg = fill.AddComponent<Image>();
-        fillImg.color = new Color(0.2f, 0.6f, 1f);
-        RectTransform fillRt = fill.GetComponent<RectTransform>();
-        fillRt.sizeDelta = Vector2.zero;
-
-        // Handle
-        GameObject handleArea = new GameObject("Handle Slide Area");
-        handleArea.transform.SetParent(sliderObj.transform, false);
-        RectTransform handleAreaRt = handleArea.AddComponent<RectTransform>();
-        handleAreaRt.anchorMin = Vector2.zero;
-        handleAreaRt.anchorMax = Vector2.one;
-        handleAreaRt.sizeDelta = new Vector2(-20f, 0f);
-
-        GameObject handle = new GameObject("Handle");
-        handle.transform.SetParent(handleArea.transform, false);
-        Image handleImg = handle.AddComponent<Image>();
-        handleImg.color = Color.white;
-        RectTransform handleRt = handle.GetComponent<RectTransform>();
-        handleRt.sizeDelta = new Vector2(20f, 0f);
-
-        slider.fillRect = fillRt;
-        slider.handleRect = handleRt;
-        slider.targetGraphic = handleImg;
-        slider.direction = Slider.Direction.LeftToRight;
-
-        return slider;
+        MeshFilter mf = go.GetComponent<MeshFilter>();
+        if (mf != null) Object.DestroyImmediate(mf);
+        MeshRenderer mr = go.GetComponent<MeshRenderer>();
+        if (mr != null) Object.DestroyImmediate(mr);
+        Collider col = go.GetComponent<Collider>();
+        if (col != null) Object.DestroyImmediate(col);
     }
 
-    private static Button CreateUIButton(Transform parent, string name, string labelText, float posY, Color bgColor, Font font)
+    private static void ResetLinkTransform(Transform t, Vector3 localPos)
     {
-        GameObject btnObj = new GameObject(name);
-        btnObj.transform.SetParent(parent, false);
-        Image img = btnObj.AddComponent<Image>();
-        img.color = bgColor;
-        Button btn = btnObj.AddComponent<Button>();
-
-        RectTransform rt = btnObj.GetComponent<RectTransform>();
-        rt.anchorMin = new Vector2(0f, 1f);
-        rt.anchorMax = new Vector2(1f, 1f);
-        rt.anchoredPosition = new Vector2(0f, posY);
-        rt.sizeDelta = new Vector2(-40f, 40f);
-
-        Text txt = CreateUIText(btnObj.transform, "Text", labelText,
-            Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, 14, FontStyle.Bold, Color.white, font);
-        txt.alignment = TextAnchor.MiddleCenter;
-
-        return btn;
+        t.localPosition = localPos;
+        t.localRotation = Quaternion.identity;
+        t.localScale = Vector3.one;
     }
 
-    private static T GetOrAddComponent<T>(GameObject go) where T : Component
+    private static GameObject EnsureChildVisual(Transform parent, string visualName, PrimitiveType type,
+        Vector3 localPos, Vector3 localScale, Material mat, PhysicMaterial physMat, bool keepCollider)
+    {
+        Transform existing = parent.Find(visualName);
+        if (existing != null) Object.DestroyImmediate(existing.gameObject);
+
+        GameObject go = GameObject.CreatePrimitive(type);
+        go.name = visualName;
+        go.transform.SetParent(parent, false);
+        go.transform.localPosition = localPos;
+        go.transform.localRotation = Quaternion.identity;
+        go.transform.localScale = localScale;
+        go.GetComponent<MeshRenderer>().sharedMaterial = mat;
+
+        Collider col = go.GetComponent<Collider>();
+        if (!keepCollider)
+        {
+            if (col != null) Object.DestroyImmediate(col);
+        }
+        else if (col != null && physMat != null)
+        {
+            col.sharedMaterial = physMat;
+        }
+        return go;
+    }
+
+    private static ArticulationBody ConfigureLinkJoint(GameObject link, ArticulationJointType type, Quaternion axis, float mass)
+    {
+        ArticulationBody ab = GetOrAdd<ArticulationBody>(link);
+        ab.jointType = type;
+        ab.mass = mass;
+        ab.anchorPosition = Vector3.zero;
+        ab.anchorRotation = axis;
+        ab.parentAnchorPosition = link.transform.localPosition;
+        ab.parentAnchorRotation = axis;
+        ab.matchAnchors = true;
+        return ab;
+    }
+
+    private static RobotJointController ConfigureController(GameObject link, string jointName,
+        float stiffness, float damping, float forceLimit, float lower, float upper, float smoothSpeed)
+    {
+        RobotJointController c = GetOrAdd<RobotJointController>(link);
+        SetString(c, "jointName", jointName);
+        SetFloat(c, "stiffness", stiffness);
+        SetFloat(c, "damping", damping);
+        SetFloat(c, "forceLimit", forceLimit);
+        SetFloat(c, "lowerLimit", lower);
+        SetFloat(c, "upperLimit", upper);
+        SetFloat(c, "smoothSpeed", smoothSpeed);
+        SetFloat(c, "targetValue", 0f);
+        c.ConfigureDrive();
+        return c;
+    }
+
+    private static T GetOrAdd<T>(GameObject go) where T : Component
     {
         T comp = go.GetComponent<T>();
         if (comp == null) comp = go.AddComponent<T>();
         return comp;
     }
 
-    private static void SetPrivateField(object target, string fieldName, object value)
+    private static DefaultControls.Resources UIResources()
     {
-        var field = target.GetType().GetField(fieldName, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
-        if (field != null)
+        return new DefaultControls.Resources
         {
-            field.SetValue(target, value);
-        }
+            standard = AssetDatabase.GetBuiltinExtraResource<Sprite>("UI/Skin/UISprite.psd"),
+            background = AssetDatabase.GetBuiltinExtraResource<Sprite>("UI/Skin/Background.psd"),
+            inputField = AssetDatabase.GetBuiltinExtraResource<Sprite>("UI/Skin/InputFieldBackground.psd"),
+            knob = AssetDatabase.GetBuiltinExtraResource<Sprite>("UI/Skin/Knob.psd"),
+            checkmark = AssetDatabase.GetBuiltinExtraResource<Sprite>("UI/Skin/Checkmark.psd"),
+            dropdown = AssetDatabase.GetBuiltinExtraResource<Sprite>("UI/Skin/DropdownArrow.psd"),
+            mask = AssetDatabase.GetBuiltinExtraResource<Sprite>("UI/Skin/UIMask.psd")
+        };
     }
-    #endregion
+
+    private static RectTransform MakePanel(Transform parent, string name, Vector2 anchorMin, Vector2 anchorMax,
+        Vector2 pivot, Vector2 pos, float width, Color color)
+    {
+        GameObject go = new GameObject(name, typeof(RectTransform), typeof(Image), typeof(VerticalLayoutGroup), typeof(ContentSizeFitter));
+        go.transform.SetParent(parent, false);
+        go.GetComponent<Image>().color = color;
+        RectTransform rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = anchorMin;
+        rt.anchorMax = anchorMax;
+        rt.pivot = pivot;
+        rt.anchoredPosition = pos;
+        rt.sizeDelta = new Vector2(width, 0f);
+
+        VerticalLayoutGroup v = go.GetComponent<VerticalLayoutGroup>();
+        v.padding = new RectOffset(14, 14, 12, 12);
+        v.spacing = 6f;
+        v.childControlWidth = true;
+        v.childControlHeight = true;
+        v.childForceExpandWidth = true;
+        v.childForceExpandHeight = false;
+
+        ContentSizeFitter f = go.GetComponent<ContentSizeFitter>();
+        f.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
+        f.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+        return rt;
+    }
+
+    private static Text AddLabel(Transform parent, string text, int size, FontStyle style, Color color, float height)
+    {
+        GameObject go = new GameObject("Texto", typeof(RectTransform), typeof(Text));
+        go.transform.SetParent(parent, false);
+        Text t = go.GetComponent<Text>();
+        t.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        t.text = text;
+        t.fontSize = size;
+        t.fontStyle = style;
+        t.color = color;
+        t.horizontalOverflow = HorizontalWrapMode.Wrap;
+        t.verticalOverflow = VerticalWrapMode.Overflow;
+        if (height > 0f)
+        {
+            LayoutElement le = go.AddComponent<LayoutElement>();
+            le.preferredHeight = height;
+        }
+        return t;
+    }
+
+    private static Slider AddSlider(Transform parent, DefaultControls.Resources res, string label)
+    {
+        AddLabel(parent, label, 16, FontStyle.Bold, new Color(0.9f, 0.9f, 0.9f), 22f);
+        GameObject s = DefaultControls.CreateSlider(res);
+        s.transform.SetParent(parent, false);
+        LayoutElement le = s.AddComponent<LayoutElement>();
+        le.preferredHeight = 24f;
+        return s.GetComponent<Slider>();
+    }
+
+    private static Button AddButton(Transform parent, DefaultControls.Resources res, string label, Color color)
+    {
+        GameObject b = DefaultControls.CreateButton(res);
+        b.transform.SetParent(parent, false);
+        b.GetComponent<Image>().color = color;
+        LayoutElement le = b.AddComponent<LayoutElement>();
+        le.preferredHeight = 38f;
+        Text t = b.GetComponentInChildren<Text>();
+        t.text = label;
+        t.fontSize = 16;
+        t.fontStyle = FontStyle.Bold;
+        t.color = Color.white;
+        return b.GetComponent<Button>();
+    }
+
+    private static Material LoadOrCreateMaterial(string name, Color color)
+    {
+        string path = ASSET_DIR + "/" + name + ".mat";
+        Material m = AssetDatabase.LoadAssetAtPath<Material>(path);
+        if (m != null) return m;
+        m = new Material(Shader.Find("Standard")) { color = color };
+        AssetDatabase.CreateAsset(m, path);
+        return m;
+    }
+
+    private static PhysicMaterial LoadOrCreatePhysicMaterial()
+    {
+        string path = ASSET_DIR + "/Friccion agarre.physicMaterial";
+        PhysicMaterial pm = AssetDatabase.LoadAssetAtPath<PhysicMaterial>(path);
+        if (pm != null) return pm;
+        pm = new PhysicMaterial("Friccion agarre")
+        {
+            staticFriction = 1.2f,
+            dynamicFriction = 1.0f,
+            frictionCombine = PhysicMaterialCombine.Maximum,
+            bounciness = 0f,
+            bounceCombine = PhysicMaterialCombine.Minimum
+        };
+        AssetDatabase.CreateAsset(pm, path);
+        return pm;
+    }
+
+    private static void SetRef(Object target, string field, Object value)
+    {
+        var so = new SerializedObject(target);
+        SerializedProperty p = so.FindProperty(field);
+        if (p == null) return;
+        p.objectReferenceValue = value;
+        so.ApplyModifiedPropertiesWithoutUndo();
+    }
+
+    private static void SetFloat(Object target, string field, float value)
+    {
+        var so = new SerializedObject(target);
+        SerializedProperty p = so.FindProperty(field);
+        if (p == null) return;
+        p.floatValue = value;
+        so.ApplyModifiedPropertiesWithoutUndo();
+    }
+
+    private static void SetString(Object target, string field, string value)
+    {
+        var so = new SerializedObject(target);
+        SerializedProperty p = so.FindProperty(field);
+        if (p == null) return;
+        p.stringValue = value;
+        so.ApplyModifiedPropertiesWithoutUndo();
+    }
 }
 #endif

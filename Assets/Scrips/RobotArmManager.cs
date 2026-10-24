@@ -6,6 +6,7 @@ using UnityEngine;
 /// Coordina todos los joints del mecanismo, expone métodos de control para la UI,
 /// administra la apertura/cierre sincronizado de la garra y la postura de reposo (Reset).
 /// </summary>
+[SelectionBase]
 public class RobotArmManager : MonoBehaviour
 {
     [Header("Joints Principales (Controlados)")]
@@ -25,17 +26,17 @@ public class RobotArmManager : MonoBehaviour
     [Tooltip("Dedo derecho de la pinza (Prismatic).")]
     [SerializeField] private RobotJointController rightFingerJoint;
 
-    [Tooltip("Apertura máxima de los dedos en metros (recorrido del joint prismático).")]
-    [SerializeField] private float maxGripperStroke = 0.05f;
+    [Tooltip("Recorrido máximo de cierre de cada dedo en metros.")]
+    [SerializeField] private float maxGripperStroke = 0.08f;
 
     [Header("Joint Pasivo (Gravedad / Inercia)")]
-    [Tooltip("Elemento esférico pasivo sin motor que oscila libremente por inercia y gravedad.")]
+    [Tooltip("Elemento esférico pasivo sin motor que oscila libremente colgado de una soga.")]
     [SerializeField] private ArticulationBody passivePendulum;
 
     [Header("Posición de Reposo / Home")]
     [SerializeField] private float homeBaseAngle = 0f;
     [SerializeField] private float homeShoulderAngle = 20f;
-    [SerializeField] private float homeElbowAngle = -20f;
+    [SerializeField] private float homeElbowAngle = 25f;
     [SerializeField] private float homeGripperOpen = 1f; // 1 = Abierto, 0 = Cerrado
 
     // Estado interno
@@ -52,10 +53,75 @@ public class RobotArmManager : MonoBehaviour
     public bool IsGripperOpen => isGripperOpen;
     public float CurrentGripperNormalized => currentGripperNormalized;
 
+    private void Awake()
+    {
+        EnsureHierarchyAndJointsAligned();
+    }
+
     private void Start()
     {
         // Posicionar el brazo en la postura inicial
         ResetArmPositions();
+    }
+
+    /// <summary>
+    /// Verifica y alinea automáticamente los dedos de la garra y el péndulo pasivo
+    /// para que ambos dedos queden a la misma altura y se desplacen horizontalmente sobre Z.
+    /// </summary>
+    public void EnsureHierarchyAndJointsAligned()
+    {
+        if (leftFingerJoint != null && rightFingerJoint != null)
+        {
+            Transform lTr = leftFingerJoint.transform;
+            Transform rTr = rightFingerJoint.transform;
+
+            // Tomamos la altura (Y) y escala del dedo derecho como referencia para alinear el izquierdo
+            float absZ = Mathf.Max(Mathf.Abs(rTr.localPosition.z), Mathf.Abs(lTr.localPosition.z));
+            if (absZ < 0.01f) absZ = 0.115f;
+
+            lTr.localPosition = new Vector3(rTr.localPosition.x, rTr.localPosition.y, -absZ);
+            rTr.localPosition = new Vector3(rTr.localPosition.x, rTr.localPosition.y, absZ);
+            lTr.localRotation = Quaternion.identity;
+            rTr.localRotation = Quaternion.identity;
+            lTr.localScale = rTr.localScale;
+
+            leftFingerJoint.ConfigureLimits(0f, maxGripperStroke);
+            rightFingerJoint.ConfigureLimits(-maxGripperStroke, 0f);
+            leftFingerJoint.ConfigureDrive();
+            rightFingerJoint.ConfigureDrive();
+        }
+
+        if (passivePendulum == null)
+        {
+            Transform pendTr = FindDeepChild(transform, "PenduloPasivo");
+            if (pendTr != null)
+            {
+                passivePendulum = pendTr.GetComponent<ArticulationBody>();
+                if (passivePendulum == null)
+                {
+                    passivePendulum = pendTr.gameObject.AddComponent<ArticulationBody>();
+                    passivePendulum.jointType = ArticulationJointType.SphericalJoint;
+                    passivePendulum.mass = 0.3f;
+                    passivePendulum.jointFriction = 0f;
+                    passivePendulum.angularDamping = 0.5f;
+                }
+                if (pendTr.GetComponent<PassivePendulum>() == null)
+                {
+                    pendTr.gameObject.AddComponent<PassivePendulum>();
+                }
+            }
+        }
+    }
+
+    private static Transform FindDeepChild(Transform parent, string targetName)
+    {
+        foreach (Transform child in parent)
+        {
+            if (child.name == targetName) return child;
+            Transform found = FindDeepChild(child, targetName);
+            if (found != null) return found;
+        }
+        return null;
     }
 
     /// <summary>
@@ -87,21 +153,21 @@ public class RobotArmManager : MonoBehaviour
 
     /// <summary>
     /// Controla la apertura de la garra de 0 (completamente cerrada) a 1 (completamente abierta).
-    /// Desplaza ambos dedos prismáticos de forma simétrica.
+    /// En reposo (target = 0) ambos dedos están abiertos en los bordes de SoporteGarra.
+    /// Al cerrar, DedoIzquierdo (z < 0) avanza +closeOffset en +Z y DedoDerecho (z > 0) avanza -closeOffset en -Z.
     /// </summary>
     public void SetGripperTarget(float normalizedOpen)
     {
         currentGripperNormalized = Mathf.Clamp01(normalizedOpen);
         isGripperOpen = currentGripperNormalized > 0.4f;
 
-        float targetOffset = currentGripperNormalized * maxGripperStroke;
+        float closeOffset = (1f - currentGripperNormalized) * maxGripperStroke;
 
-        // Dedo izquierdo se desplaza hacia +targetOffset, derecho hacia -targetOffset
         if (leftFingerJoint != null)
-            leftFingerJoint.SetTarget(targetOffset);
+            leftFingerJoint.SetTarget(closeOffset);
 
         if (rightFingerJoint != null)
-            rightFingerJoint.SetTarget(-targetOffset);
+            rightFingerJoint.SetTarget(-closeOffset);
     }
 
     /// <summary>

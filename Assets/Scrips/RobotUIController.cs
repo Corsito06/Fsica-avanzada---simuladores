@@ -211,26 +211,25 @@ public class RobotUIController : MonoBehaviour
 
         sb.Clear();
         sb.AppendLine("=== TELEMETRÍA DEL ROBOT (ArticulationBody) ===");
-        sb.AppendLine(string.Format("{0,-12} | {1,-10} | {2,-10} | {3,-8}", "Articulación", "Target", "Real", "Error"));
-        sb.AppendLine("-------------------------------------------------------");
+        sb.AppendLine("Articulación: Target | Real | Error");
+        sb.AppendLine("--------------------------------------------");
 
         var joints = armManager.GetAllControlledJoints();
         foreach (var joint in joints)
         {
             string unit = (joint.JointType == ArticulationJointType.PrismaticJoint) ? "m" : "°";
-            sb.AppendLine(string.Format("{0,-12} | {1,7:F1}{2} | {3,7:F1}{2} | {4,5:F2}{2}",
+            string fmt = (joint.JointType == ArticulationJointType.PrismaticJoint) ? "F3" : "F1";
+            sb.AppendLine(string.Format("{0}: {1}{4} | {2}{4} | {3}{4}",
                 joint.JointName,
-                joint.TargetValue,
-                unit,
-                joint.CurrentPosition,
-                unit,
-                joint.TrackingError,
+                joint.TargetValue.ToString(fmt),
+                joint.CurrentPosition.ToString(fmt),
+                joint.TrackingError.ToString(fmt),
                 unit));
         }
 
         // Joint Pasivo
         float passiveAngle = armManager.GetPassivePendulumAngle();
-        sb.AppendLine("-------------------------------------------------------");
+        sb.AppendLine("--------------------------------------------");
         sb.AppendLine(string.Format("Péndulo Pasivo (Spherical): Inclinación = {0:F1}°", passiveAngle));
         sb.AppendLine(string.Format("Estado Pinza: {0} ({1:P0})",
             armManager.IsGripperOpen ? "ABIERTA" : "CERRADA",
